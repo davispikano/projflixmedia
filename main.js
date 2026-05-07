@@ -584,12 +584,23 @@ ipcMain.handle('discover:trending', async () => {
         it.banner = await downloadToCache(`https://image.tmdb.org/t/p/w780${it.backdropPath}`, fname);
       } catch {}
     }
-    const imdbId = findImdbIdForTitle(it.title, it.year);
+    // Resolve IMDb id reliably via TMDB external_ids (works for any localized
+    // title), then fall back to title-based lookup against mokronos.
+    let imdbId = null;
+    try {
+      const ext = await httpsGetJson(`https://api.themoviedb.org/3/${it.kind}/${it.tmdbId}/external_ids?api_key=${config.tmdbKey}`);
+      if (ext && ext.imdb_id) imdbId = ext.imdb_id;
+    } catch {}
+    if (!imdbId) imdbId = findImdbIdForTitle(it.title, it.year);
     if (imdbId) {
       it.imdbId = imdbId;
       it.imdbUrl = `https://www.imdb.com/title/${imdbId}/`;
-      // Look up rating in cache if previously fetched, otherwise leave null
-      // (we don't fetch per-show ratings here to keep this fast).
+      // Try to grab the average rating from the heatmap dataset (cheap; one
+      // tiny JSON per show). This makes the discover row show IMDb numbers.
+      try {
+        const data = await fetchImdbRatings(imdbId);
+        if (data && data.average != null) it.imdbRating = data.average;
+      } catch {}
     }
   }
   // Interleave tv and movie so the row mixes both, but cap at 16 total
@@ -675,7 +686,7 @@ async function tmdbLookup(title, type /* 'tv' | 'movie' */) {
 // Fetch full meta (with optional season episode names) for a chosen TMDB id
 async function buildMetaFromTmdbId(tmdbId, type /* 'tv' | 'movie' */, neededSeasons /* number[] | null */) {
   const lang = encodeURIComponent(config.tmdbLang || 'pt-BR');
-  const detailUrl = `https://api.themoviedb.org/3/${type}/${tmdbId}?api_key=${config.tmdbKey}&language=${lang}`;
+  const detailUrl = `https://api.themoviedb.org/3/${type}/${tmdbId}?api_key=${config.tmdbKey}&language=${lang}&append_to_response=external_ids`;
   const json = await httpsGetJson(detailUrl);
   const name = json.name || json.title;
   const year = (json.first_air_date || json.release_date || '').slice(0, 4);
@@ -687,8 +698,9 @@ async function buildMetaFromTmdbId(tmdbId, type /* 'tv' | 'movie' */, neededSeas
     overview: json.overview || '',
     posterPath: json.poster_path,
     backdropPath: json.backdrop_path,
+    imdbId: (json.external_ids && json.external_ids.imdb_id) || null,
     fetchedAt: Date.now(),
-    episodes: {}, // { [seasonNumber]: { [episodeNumber]: name } }
+    episodes: {},
   };
   if (json.backdrop_path) {
     try {
@@ -921,7 +933,27 @@ ipcMain.handle('imdb:fetchAll', async (event) => {
     const key = groupKeyFromName(it.title) || it.id;
     const cached = metaCache[key] || {};
     if (cached.imdb && cached.imdb.average != null) continue;
-    const id = findImdbIdForTitle(it.title, it.year);
+
+    // 1) Prefer the IMDb id we got from TMDB external_ids (works for any
+    //    localized title — Como Eu Conheci Sua Mãe, Histórias de 85, etc.)
+    let id = cached.imdbId || null;
+
+    // 2) If no TMDB-derived id, try to discover one via TMDB now
+    if (!id && config.tmdbKey && cached.tmdbId) {
+      try {
+        const lang = encodeURIComponent(config.tmdbLang || 'pt-BR');
+        const kindCached = cached.type || (it.type === 'series' ? 'tv' : 'movie');
+        const ext = await httpsGetJson(`https://api.themoviedb.org/3/${kindCached}/${cached.tmdbId}/external_ids?api_key=${config.tmdbKey}&language=${lang}`);
+        if (ext && ext.imdb_id) {
+          id = ext.imdb_id;
+          metaCache[key] = { ...cached, imdbId: id };
+        }
+      } catch {}
+    }
+
+    // 3) Last resort: title-based lookup against mokronos index
+    if (!id) id = findImdbIdForTitle(it.title, it.year);
+
     if (!id) {
       missing++;
       event.sender && event.sender.send('imdb:progress', { title: it.title, ok: false });
@@ -929,7 +961,7 @@ ipcMain.handle('imdb:fetchAll', async (event) => {
     }
     try {
       const data = await fetchImdbRatings(id);
-      metaCache[key] = { ...cached, imdb: data };
+      metaCache[key] = { ...metaCache[key], imdb: data, imdbId: id };
       updated++;
       event.sender && event.sender.send('imdb:progress', { title: it.title, ok: true, rating: data.average });
     } catch (e) {
