@@ -574,7 +574,10 @@ async function init() {
     const section = document.getElementById(targetId);
     if (!section) return;
     const storageKey = 'rowView:' + targetId;
-    if (localStorage.getItem(storageKey) === 'grid') section.classList.add('grid');
+    // Grid is the default; only switch to carousel when explicitly saved.
+    const saved = localStorage.getItem(storageKey);
+    if (saved === 'row') section.classList.remove('grid');
+    else section.classList.add('grid');
     btn.addEventListener('click', () => {
       const isGrid = section.classList.toggle('grid');
       localStorage.setItem(storageKey, isGrid ? 'grid' : 'row');
