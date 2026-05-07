@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('api', {
   onMetaProgress: (cb) => ipcRenderer.on('meta:progress', (_e, data) => cb(data)),
   getProgress: () => ipcRenderer.invoke('progress:get'),
   clearProgress: (p) => ipcRenderer.invoke('progress:clear', p),
+  getHistory: () => ipcRenderer.invoke('history:get'),
+  clearHistory: () => ipcRenderer.invoke('history:clear'),
   play: (p) => ipcRenderer.invoke('play', p),
   openFolder: (p) => ipcRenderer.invoke('shell:openFolder', p),
   readImage: (p) => ipcRenderer.invoke('image:read', p),

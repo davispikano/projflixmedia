@@ -32,10 +32,13 @@ function writeJson(p, data) {
 let config = readJson(configPath, { folders: [], vlcPath: '', vlcPort: 9090, vlcPassword: 'mediaflix', tmdbKey: '', tmdbLang: 'pt-BR' });
 let progress = readJson(progressPath, {}); // { [filePath]: { time, length, updatedAt } }
 let metaCache = readJson(path.join(userDir, 'meta-cache.json'), {}); // { [groupKey]: { title, banner, poster, overview, year, fetchedAt } }
+const historyPath = path.join(userDir, 'history.json');
+let history = readJson(historyPath, {}); // { [filePath]: { openedAt, closedAt, openCount } }
 
 function saveConfig() { writeJson(configPath, config); }
 function saveProgress() { writeJson(progressPath, progress); }
 function saveMetaCache() { writeJson(path.join(userDir, 'meta-cache.json'), metaCache); }
+function saveHistory() { writeJson(historyPath, history); }
 
 // ---------- Library scanning ----------
 function findBanner(dir) {
@@ -418,10 +421,24 @@ async function playFile(filePath) {
   if (startTime > 0) args.push(`--start-time=${startTime}`);
 
   vlcProcess = spawn(vlc, args, { detached: false, stdio: 'ignore' });
+
+  // Log open event immediately on click — even if VLC fails to send progress
+  const entry = history[filePath] || { openCount: 0 };
+  entry.openedAt = Date.now();
+  entry.openCount = (entry.openCount || 0) + 1;
+  entry.closedAt = null;
+  history[filePath] = entry;
+  saveHistory();
+
   vlcProcess.on('exit', () => {
     stopPolling();
     vlcProcess = null;
     currentPlayingPath = null;
+    // Log close timestamp
+    if (history[filePath]) {
+      history[filePath].closedAt = Date.now();
+      saveHistory();
+    }
   });
 
   // Give VLC a moment to bind the HTTP port, then start polling
@@ -467,6 +484,8 @@ ipcMain.handle('config:setVlcPath', async () => {
 });
 
 ipcMain.handle('progress:get', () => progress);
+ipcMain.handle('history:get', () => history);
+ipcMain.handle('history:clear', () => { history = {}; saveHistory(); return { ok: true }; });
 ipcMain.handle('progress:clear', (_e, filePath) => {
   delete progress[filePath];
   saveProgress();
@@ -694,6 +713,10 @@ ipcMain.handle('library:resetCache', () => {
     try { fs.statSync(filePath); } catch { delete progress[filePath]; pruned++; }
   }
   if (pruned) saveProgress();
+  for (const filePath of Object.keys(history)) {
+    try { fs.statSync(filePath); } catch { delete history[filePath]; }
+  }
+  saveHistory();
   return { ok: true, library: scanLibrary(), prunedProgress: pruned };
 });
 

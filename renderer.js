@@ -5,6 +5,7 @@ const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 const state = {
   library: [],
   progress: {},
+  history: {},
   currentDetail: null,
   imageCache: new Map(),
 };
@@ -27,15 +28,39 @@ function progressOf(filePath) {
   return { ratio, ...p };
 }
 
+function lastActivityForPath(filePath) {
+  const p = state.progress[filePath];
+  const h = state.history[filePath];
+  const candidates = [];
+  if (p && p.updatedAt) candidates.push(p.updatedAt);
+  if (h && h.openedAt) candidates.push(h.openedAt);
+  if (h && h.closedAt) candidates.push(h.closedAt);
+  return candidates.length ? Math.max(...candidates) : 0;
+}
+
 function itemProgress(item) {
-  if (item.type === 'movie') return progressOf(item.path);
-  // For series, find the most recent episode with progress
+  if (item.type === 'movie') {
+    const p = progressOf(item.path);
+    const last = lastActivityForPath(item.path);
+    if (p) return { ...p, lastActivity: last };
+    if (last > 0) return { ratio: 0, time: 0, length: 0, updatedAt: last, lastActivity: last };
+    return null;
+  }
+  // For series, find the episode with the most recent activity (history OR progress)
   let latest = null;
   for (const ep of item.episodes) {
-    const p = state.progress[ep.path];
-    if (!p) continue;
-    if (!latest || p.updatedAt > latest.updatedAt) {
-      latest = { ...p, episode: ep, ratio: Math.min(1, p.time / p.length) };
+    const last = lastActivityForPath(ep.path);
+    if (!last) continue;
+    if (!latest || last > latest.lastActivity) {
+      const p = state.progress[ep.path];
+      latest = {
+        episode: ep,
+        time: p ? p.time : 0,
+        length: p ? p.length : 0,
+        updatedAt: p ? p.updatedAt : last,
+        ratio: p && p.length ? Math.min(1, p.time / p.length) : 0,
+        lastActivity: last,
+      };
     }
   }
   return latest;
@@ -76,8 +101,8 @@ async function renderHero() {
   const withBanner = state.library.filter((i) => i.banner);
   const recent = state.library
     .map((i) => ({ i, p: itemProgress(i) }))
-    .filter((x) => x.p)
-    .sort((a, b) => b.p.updatedAt - a.p.updatedAt);
+    .filter((x) => x.p && x.p.lastActivity)
+    .sort((a, b) => b.p.lastActivity - a.p.lastActivity);
 
   let featured = recent.length && recent[0].i.banner ? recent[0].i : (withBanner[0] || state.library[0]);
 
@@ -151,8 +176,9 @@ async function renderRows() {
 
   const continueItems = state.library
     .map((i) => ({ i, p: itemProgress(i) }))
-    .filter((x) => x.p && x.p.ratio < 0.95)
-    .sort((a, b) => b.p.updatedAt - a.p.updatedAt)
+    .filter((x) => x.p && x.p.lastActivity)
+    .filter((x) => !(x.p.ratio >= 0.95))
+    .sort((a, b) => b.p.lastActivity - a.p.lastActivity)
     .map((x) => x.i)
     .slice(0, 12);
 
@@ -330,7 +356,12 @@ async function playFile(filePath) {
   const res = await window.api.play(filePath);
   if (!res.ok) {
     showToast(res.error || 'Falha ao abrir o VLC');
+    return;
   }
+  // Refresh history immediately so "Continuar assistindo" updates without waiting
+  state.history = await window.api.getHistory();
+  await renderRows();
+  await renderHero();
 }
 
 // ---------- Settings ----------
@@ -385,7 +416,10 @@ function route(name) {
 
 // ---------- Bootstrap ----------
 async function renderAll() {
-  state.progress = await window.api.getProgress();
+  [state.progress, state.history] = await Promise.all([
+    window.api.getProgress(),
+    window.api.getHistory(),
+  ]);
   await renderHero();
   await renderRows();
   if (!state.library.length) {
@@ -500,10 +534,13 @@ async function init() {
     if (e.key === 'Escape' && !$('#detail').classList.contains('hidden')) closeDetail();
   });
 
-  // Periodic refresh of progress so cards stay current while VLC is open
+  // Periodic refresh of progress + history so the "Continuar" row stays fresh
   setInterval(async () => {
-    state.progress = await window.api.getProgress();
-    // Re-render rows lightly only if something changed
+    [state.progress, state.history] = await Promise.all([
+      window.api.getProgress(),
+      window.api.getHistory(),
+    ]);
+    await renderRows();
   }, 6000);
 
   // Initial load
