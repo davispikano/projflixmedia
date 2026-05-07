@@ -22,5 +22,7 @@ contextBridge.exposeInMainWorld('api', {
   clearHistory: () => ipcRenderer.invoke('history:clear'),
   play: (p) => ipcRenderer.invoke('play', p),
   openFolder: (p) => ipcRenderer.invoke('shell:openFolder', p),
+  openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
+  getTrending: () => ipcRenderer.invoke('discover:trending'),
   readImage: (p) => ipcRenderer.invoke('image:read', p),
 });

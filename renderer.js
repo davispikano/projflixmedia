@@ -198,6 +198,55 @@ async function renderRows() {
   if (typeof window.__applySearchFilter === 'function') window.__applySearchFilter();
 }
 
+async function buildDiscoverCard(item) {
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.dataset.search = (item.title || '').toLowerCase();
+  const bg = item.banner ? await loadImage(item.banner) : null;
+  const sub = item.kind === 'tv' ? 'SÉRIE' : 'FILME';
+  const rating = item.imdbRating || item.tmdbRating;
+  const ratingSrc = item.imdbRating ? 'IMDb' : 'TMDB';
+  card.innerHTML = `
+    <div class="card-img ${bg ? '' : 'fallback'}" ${bg ? `style="background-image:url('${bg}')"` : ''}></div>
+    <div class="card-fade"></div>
+    <span class="card-badge">${sub}${item.year ? ' · ' + item.year : ''}</span>
+    ${rating ? `<span class="card-rating" title="${ratingSrc}">${rating.toFixed(1)}</span>` : ''}
+    <div class="card-meta">
+      <h3 class="card-title">${escapeHtml(item.title)}</h3>
+      <span class="card-sub">${item.imdbId ? 'Abrir no IMDb' : 'Abrir no TMDB'}</span>
+    </div>
+  `;
+  card.addEventListener('click', () => {
+    const url = item.imdbUrl || `https://www.themoviedb.org/${item.kind}/${item.tmdbId}`;
+    if (window.api.openExternal) window.api.openExternal(url);
+  });
+  return card;
+}
+
+async function renderTrending() {
+  const row = document.getElementById('trendingRow');
+  const track = document.getElementById('trendingTrack');
+  const count = document.getElementById('trendingCount');
+  if (!row || !track) return;
+  try {
+    const cfg = await window.api.getConfig();
+    if (!cfg || !cfg.tmdbKey) { row.classList.add('hidden'); return; }
+    const res = await window.api.getTrending();
+    if (!res || !res.ok || !res.items || !res.items.length) {
+      row.classList.add('hidden');
+      return;
+    }
+    row.classList.remove('hidden');
+    count.textContent = String(res.items.length).padStart(2, '0');
+    track.innerHTML = '';
+    for (const it of res.items) track.appendChild(await buildDiscoverCard(it));
+    if (typeof window.__applySearchFilter === 'function') window.__applySearchFilter();
+  } catch (e) {
+    console.warn('trending failed', e);
+    row.classList.add('hidden');
+  }
+}
+
 async function fillRow(rowSel, trackSel, countSel, items, opts = {}) {
   const row = $(rowSel), track = $(trackSel), count = $(countSel);
   if (!items.length) { row.classList.add('hidden'); return; }
@@ -569,6 +618,14 @@ async function init() {
   state.library = await window.api.getLibrary();
   await renderAll();
   if (!state.library.length) route('home');
+
+  // Discover row (trending). Background-loaded so the UI never blocks.
+  renderTrending();
+  const refreshTrendingBtn = document.getElementById('refreshTrendingBtn');
+  if (refreshTrendingBtn) refreshTrendingBtn.addEventListener('click', () => {
+    showToast('Atualizando \"Em alta\"…');
+    renderTrending();
+  });
 
   // Live search across all card rows + grid sections. Filters by data-search
   // (set when the card is built). Hides empty rows so the layout stays tight.

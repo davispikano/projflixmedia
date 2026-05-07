@@ -539,6 +539,61 @@ ipcMain.handle('shell:openFolder', (_e, folder) => {
   return { ok: true };
 });
 
+ipcMain.handle('shell:openExternal', (_e, url) => {
+  if (typeof url === 'string' && /^https?:\/\//.test(url)) shell.openExternal(url);
+  return { ok: true };
+});
+
+// ---------- Discover (trending) ----------
+ipcMain.handle('discover:trending', async () => {
+  if (!config.tmdbKey) return { ok: false, error: 'Configure a chave TMDB primeiro.' };
+  const lang = encodeURIComponent(config.tmdbLang || 'pt-BR');
+  // Try to ensure the IMDb title index is loaded (best-effort, used to enrich
+  // each trending item with a rating).
+  try { await getImdbTitleIndex(); } catch {}
+  const fetchTrending = async (kind /* 'tv' | 'movie' */) => {
+    const url = `https://api.themoviedb.org/3/trending/${kind}/week?api_key=${config.tmdbKey}&language=${lang}`;
+    const json = await httpsGetJson(url);
+    return (json.results || []).slice(0, 12).map((r) => ({
+      tmdbId: r.id,
+      kind,
+      title: r.name || r.title || 'Sem título',
+      year: (r.first_air_date || r.release_date || '').slice(0, 4),
+      overview: r.overview || '',
+      backdropPath: r.backdrop_path,
+      tmdbRating: typeof r.vote_average === 'number' ? +r.vote_average.toFixed(1) : null,
+    }));
+  };
+  let tv = [], movie = [];
+  try { tv = await fetchTrending('tv'); } catch {}
+  try { movie = await fetchTrending('movie'); } catch {}
+  const items = [...tv, ...movie];
+  // Download backdrops to local cache + attach IMDb id/rating when known
+  for (const it of items) {
+    if (it.backdropPath) {
+      try {
+        const ext = path.extname(it.backdropPath) || '.jpg';
+        const fname = 'tr_' + Buffer.from(it.backdropPath).toString('base64url') + ext;
+        it.banner = await downloadToCache(`https://image.tmdb.org/t/p/w780${it.backdropPath}`, fname);
+      } catch {}
+    }
+    const imdbId = findImdbIdForTitle(it.title, it.year);
+    if (imdbId) {
+      it.imdbId = imdbId;
+      it.imdbUrl = `https://www.imdb.com/title/${imdbId}/`;
+      // Look up rating in cache if previously fetched, otherwise leave null
+      // (we don't fetch per-show ratings here to keep this fast).
+    }
+  }
+  // Interleave tv and movie so the row mixes both, but cap at 16 total
+  const mixed = [];
+  for (let i = 0; i < Math.max(tv.length, movie.length); i++) {
+    if (i < tv.length) mixed.push(items.find((x) => x.kind === 'tv' && x.tmdbId === tv[i].tmdbId));
+    if (i < movie.length) mixed.push(items.find((x) => x.kind === 'movie' && x.tmdbId === movie[i].tmdbId));
+  }
+  return { ok: true, items: mixed.filter(Boolean).slice(0, 16) };
+});
+
 // ---------- TMDB integration (optional) ----------
 function httpsGetJson(url) {
   return new Promise((resolve, reject) => {
