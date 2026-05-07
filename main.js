@@ -310,6 +310,17 @@ function scanLibrary() {
           }
         }
       }
+      // Per-episode IMDb rating from cached imdb data
+      if (meta.imdb && meta.imdb.seasons) {
+        for (const season of seasons) {
+          const rMap = meta.imdb.seasons[season.number];
+          if (!rMap) continue;
+          for (const ep of season.episodes) {
+            const r = rMap[ep.index];
+            if (typeof r === 'number') ep.imdbRating = r;
+          }
+        }
+      }
     }
 
     // Flat episodes for backward-compat / easy "next episode" UI
@@ -333,6 +344,8 @@ function scanLibrary() {
       episodes,
       overview: s.overview,
       year: s.year,
+      imdbId: (metaCache[groupKeyFromName(s.title) || s.id] && metaCache[groupKeyFromName(s.title) || s.id].imdb) ? metaCache[groupKeyFromName(s.title) || s.id].imdb.id : null,
+      imdbRating: (metaCache[groupKeyFromName(s.title) || s.id] && metaCache[groupKeyFromName(s.title) || s.id].imdb) ? metaCache[groupKeyFromName(s.title) || s.id].imdb.average : null,
     };
   });
 
@@ -344,6 +357,10 @@ function scanLibrary() {
       if (meta.banner) m.banner = meta.banner;
       m.overview = meta.overview;
       m.year = meta.year;
+      if (meta.imdb) {
+        m.imdbId = meta.imdb.id;
+        m.imdbRating = meta.imdb.average;
+      }
     }
   }
 
@@ -746,6 +763,113 @@ ipcMain.handle('meta:apply', async (_e, itemTitle, itemType, tmdbId, mediaType) 
   } catch (e) {
     return { ok: false, error: e.message };
   }
+});
+
+// ---------- IMDb ratings (via mokronos/imdb-heatmap dataset on jsDelivr) ----------
+const IMDB_DATA_BASE = 'https://cdn.jsdelivr.net/gh/mokronos/imdb-heatmap@main/data';
+const imdbTitlesPath = path.join(userDir, 'imdb-titles.json');
+
+function imdbNormalize(s) {
+  return String(s || '').toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '');
+}
+
+let imdbTitleIndex = null;
+async function getImdbTitleIndex() {
+  const cached = readJson(imdbTitlesPath, null);
+  const now = Date.now();
+  if (cached && cached.fetchedAt && now - cached.fetchedAt < 7 * 24 * 3600 * 1000 && cached.map) {
+    if (!imdbTitleIndex) imdbTitleIndex = new Map(Object.entries(cached.map));
+    return imdbTitleIndex;
+  }
+  const json = await httpsGetJson(`${IMDB_DATA_BASE}/titleId.json`);
+  const map = {};
+  if (Array.isArray(json)) {
+    for (const r of json) {
+      if (!r || !r.title || !r.id) continue;
+      const k = imdbNormalize(r.title);
+      if (k && !map[k]) map[k] = r.id;
+    }
+  } else if (json && typeof json === 'object') {
+    for (const [t, id] of Object.entries(json)) {
+      const k = imdbNormalize(t);
+      if (k && !map[k]) map[k] = id;
+    }
+  }
+  writeJson(imdbTitlesPath, { fetchedAt: now, map });
+  imdbTitleIndex = new Map(Object.entries(map));
+  return imdbTitleIndex;
+}
+
+function findImdbIdForTitle(title, year) {
+  if (!imdbTitleIndex) return null;
+  const variants = [title];
+  if (year) variants.push(`${title} ${year}`);
+  for (const v of variants) {
+    const id = imdbTitleIndex.get(imdbNormalize(v));
+    if (id) return id;
+  }
+  return null;
+}
+
+async function fetchImdbRatings(imdbId) {
+  const url = `${IMDB_DATA_BASE}/${imdbId}.json`;
+  const seasons = await httpsGetJson(url);
+  const seasonMap = {};
+  let total = 0, count = 0;
+  if (Array.isArray(seasons)) {
+    seasons.forEach((eps, sIdx) => {
+      const sNum = sIdx + 1;
+      const epMap = {};
+      (eps || []).forEach((ep, eIdx) => {
+        if (ep && typeof ep.rating === 'number') {
+          epMap[eIdx + 1] = ep.rating;
+          total += ep.rating;
+          count++;
+        }
+      });
+      if (Object.keys(epMap).length) seasonMap[sNum] = epMap;
+    });
+  }
+  return {
+    id: imdbId,
+    average: count ? +(total / count).toFixed(2) : null,
+    seasons: seasonMap,
+  };
+}
+
+ipcMain.handle('imdb:fetchAll', async (event) => {
+  try {
+    await getImdbTitleIndex();
+  } catch (e) {
+    return { ok: false, error: 'Falha ao baixar índice IMDb: ' + e.message };
+  }
+  const items = scanLibrary();
+  let updated = 0, missing = 0;
+  for (const it of items) {
+    const key = groupKeyFromName(it.title) || it.id;
+    const cached = metaCache[key] || {};
+    if (cached.imdb && cached.imdb.average != null) continue;
+    const id = findImdbIdForTitle(it.title, it.year);
+    if (!id) {
+      missing++;
+      event.sender && event.sender.send('imdb:progress', { title: it.title, ok: false });
+      continue;
+    }
+    try {
+      const data = await fetchImdbRatings(id);
+      metaCache[key] = { ...cached, imdb: data };
+      updated++;
+      event.sender && event.sender.send('imdb:progress', { title: it.title, ok: true, rating: data.average });
+    } catch (e) {
+      missing++;
+      event.sender && event.sender.send('imdb:progress', { title: it.title, ok: false, error: e.message });
+    }
+    await new Promise((r) => setTimeout(r, 80));
+  }
+  saveMetaCache();
+  return { ok: true, updated, missing, library: scanLibrary() };
 });
 
 // Hard reset: clear meta cache + library file + progress for missing files

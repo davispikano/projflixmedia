@@ -146,6 +146,7 @@ async function buildCard(item, opts = {}) {
   const { resumeMode = false } = opts;
   const card = document.createElement('div');
   card.className = 'card';
+  card.dataset.search = (item.title + ' ' + (item.rawTitle || '')).toLowerCase();
   const prog = itemProgress(item);
   const bg = item.banner ? await loadImage(item.banner) : null;
   const sub = item.type === 'series'
@@ -156,6 +157,7 @@ async function buildCard(item, opts = {}) {
     <div class="card-img ${bg ? '' : 'fallback'}" ${bg ? `style="background-image:url('${bg}')"` : ''}></div>
     <div class="card-fade"></div>
     <span class="card-badge">${sub}</span>
+    ${item.imdbRating ? `<span class="card-rating">${item.imdbRating.toFixed(1)}</span>` : ''}
     ${resumeMode ? '<span class="card-resume" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg></span>' : ''}
     <div class="card-meta">
       <h3 class="card-title">${escapeHtml(item.title)}</h3>
@@ -193,6 +195,7 @@ async function renderRows() {
   await fillRow('#continueRow', '#continueTrack', '#continueCount', continueItems, { resumeMode: true });
   await fillRow('#seriesRow', '#seriesTrack', '#seriesCount', series);
   await fillRow('#moviesRow', '#moviesTrack', '#moviesCount', movies);
+  if (typeof window.__applySearchFilter === 'function') window.__applySearchFilter();
 }
 
 async function fillRow(rowSel, trackSel, countSel, items, opts = {}) {
@@ -277,7 +280,7 @@ function renderEpisodeList(season) {
     li.innerHTML = `
       <div class="episode-num">${String(ep.index).padStart(2, '0')}</div>
       <div>
-        <p class="episode-title">${escapeHtml(ep.title)}</p>
+        <p class="episode-title">${escapeHtml(ep.title)}${ep.imdbRating ? ` <span class="episode-rating">★ ${ep.imdbRating.toFixed(1)}</span>` : ''}</p>
         ${ratio > 0 ? `<div class="episode-progress"><span style="width:${(ratio * 100).toFixed(1)}%"></span></div>` : ''}
       </div>
       <div class="episode-meta">${p ? `${fmtTime(p.time)} / ${fmtTime(p.length)}` : ''}</div>
@@ -566,6 +569,69 @@ async function init() {
   state.library = await window.api.getLibrary();
   await renderAll();
   if (!state.library.length) route('home');
+
+  // Live search across all card rows + grid sections. Filters by data-search
+  // (set when the card is built). Hides empty rows so the layout stays tight.
+  const norm = (s) => String(s || '').toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const searchInput = document.getElementById('topbarSearchInput');
+  if (searchInput) {
+    const applyFilter = () => {
+      const q = norm(searchInput.value.trim());
+      document.querySelectorAll('.card').forEach((c) => {
+        const hay = c.dataset.search || '';
+        const match = !q || norm(hay).includes(q);
+        c.style.display = match ? '' : 'none';
+      });
+      // Hide rows with no visible cards (avoids empty headers when filtering)
+      document.querySelectorAll('.row').forEach((row) => {
+        if (row.classList.contains('hidden')) return;
+        const visible = Array.from(row.querySelectorAll('.card')).some((c) => c.style.display !== 'none');
+        row.dataset.filterEmpty = visible ? '' : '1';
+        row.style.opacity = visible ? '' : '0.35';
+      });
+    };
+    searchInput.addEventListener('input', applyFilter);
+    document.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        e.preventDefault();
+        searchInput.focus();
+        searchInput.select();
+      }
+    });
+    // Re-apply after every render (cards are recreated)
+    const origRenderAll = renderAll;
+    window.__applySearchFilter = applyFilter;
+  }
+
+  // IMDb ratings button (settings)
+  const imdbBtn = document.getElementById('fetchImdbBtn');
+  if (imdbBtn) {
+    imdbBtn.addEventListener('click', async () => {
+      const log = $('#metaLog');
+      log.classList.add('active');
+      log.innerHTML = 'Buscando notas IMDb…\n';
+      showToast('Baixando notas IMDb…', 4000);
+      const res = await window.api.fetchAllImdb();
+      if (!res || !res.ok) { showToast(res && res.error ? res.error : 'Falhou'); return; }
+      state.library = res.library;
+      state.imageCache.clear();
+      await renderAll();
+      log.innerHTML += `\nConcluído: ${res.updated} com nota, ${res.missing} sem correspondência.`;
+      showToast(`Notas IMDb atualizadas (${res.updated})`);
+    });
+  }
+  if (window.api.onImdbProgress) {
+    window.api.onImdbProgress((d) => {
+      const log = $('#metaLog');
+      log.classList.add('active');
+      const cls = d.ok ? 'ok' : 'err';
+      const line = document.createElement('div');
+      line.innerHTML = `<span class="${cls}">${d.ok ? '★' : '✗'}</span> ${escapeHtml(d.title)}${d.rating ? ' — ' + d.rating : ''}`;
+      log.appendChild(line);
+      log.scrollTop = log.scrollHeight;
+    });
+  }
 
   // Restore + wire row view toggles (carousel <-> grid). Preference is persisted
   // per row in localStorage so it survives restarts.

@@ -111,7 +111,66 @@ button { font-family: inherit; cursor: pointer; }
   background: rgba(255,255,255,0.06);
 }
 
-.topbar-actions { display: flex; gap: 10px; }
+.topbar-actions { display: flex; gap: 10px; align-items: center; }
+
+.topbar-search {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 12px 0 14px;
+  height: 34px;
+  transition: border-color 0.2s var(--spring), background 0.2s var(--spring);
+}
+.topbar-search:focus-within {
+  border-color: rgba(255,255,255,0.18);
+  background: rgba(255,255,255,0.06);
+}
+.topbar-search svg { color: var(--text-faint); flex: 0 0 auto; }
+.topbar-search input {
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  padding: 0 8px;
+  width: 200px;
+}
+.topbar-search input::placeholder { color: var(--text-faint); }
+.topbar-search input::-webkit-search-cancel-button { display: none; }
+
+/* IMDb rating badge on cards */
+.card-rating {
+  position: absolute;
+  bottom: 10px; left: 10px;
+  display: inline-flex; align-items: center; gap: 4px;
+  background: rgba(10,10,11,0.78);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid var(--line);
+  padding: 3px 8px 3px 6px;
+  border-radius: 999px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: #f5d27a;
+  z-index: 2;
+}
+.card-rating::before {
+  content: '\2605';
+  font-size: 11px;
+  line-height: 1;
+}
+
+.episode-rating {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: #f5d27a;
+  margin-left: 8px;
+}
 
 .btn-primary {
   display: inline-flex; align-items: center; gap: 8px;

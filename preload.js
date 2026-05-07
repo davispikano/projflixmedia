@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld('api', {
   setVlcPath: () => ipcRenderer.invoke('config:setVlcPath'),
   setTmdbKey: (key) => ipcRenderer.invoke('config:setTmdbKey', key),
   fetchAllMeta: () => ipcRenderer.invoke('meta:fetchAll'),
+  fetchAllImdb: () => ipcRenderer.invoke('imdb:fetchAll'),
+  onImdbProgress: (cb) => ipcRenderer.on('imdb:progress', (_e, data) => cb(data)),
   clearMeta: () => ipcRenderer.invoke('meta:clear'),
   searchMeta: (query, type) => ipcRenderer.invoke('meta:search', query, type),
   applyMeta: (itemTitle, itemType, tmdbId, mediaType) => ipcRenderer.invoke('meta:apply', itemTitle, itemType, tmdbId, mediaType),
