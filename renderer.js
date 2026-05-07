@@ -45,7 +45,7 @@ function nextEpisode(item) {
   const last = itemProgress(item);
   if (!last || !last.episode) return item.episodes[0];
   if (last.ratio < 0.95) return last.episode;
-  // pick next index
+  // pick next index in flat episode list
   const idx = item.episodes.findIndex((e) => e.path === last.episode.path);
   return item.episodes[Math.min(idx + 1, item.episodes.length - 1)];
 }
@@ -123,7 +123,7 @@ async function buildCard(item) {
   const prog = itemProgress(item);
   const bg = item.banner ? await loadImage(item.banner) : null;
   const sub = item.type === 'series'
-    ? `${item.episodes.length} EP${item.episodes.length > 1 ? 'S' : ''}`
+    ? `${item.seasons && item.seasons.length > 1 ? item.seasons.length + ' TEMPORADAS' : item.episodes.length + ' EP' + (item.episodes.length > 1 ? 'S' : '')}`
     : 'FILME';
 
   card.innerHTML = `
@@ -185,39 +185,72 @@ async function openDetail(item) {
   $('#detailTitle').textContent = item.title;
 
   if (item.type === 'series') {
-    $('#detailMeta').textContent = `${item.episodes.length} episódios`;
+    const seasonCount = item.seasons ? item.seasons.length : 1;
+    const epCount = item.episodes.length;
+    const metaParts = [`${epCount} episódios`];
+    if (seasonCount > 1) metaParts.unshift(`${seasonCount} temporadas`);
+    if (item.year) metaParts.push(item.year);
+    $('#detailMeta').textContent = metaParts.join(' · ');
+
     const next = nextEpisode(item);
     const prog = state.progress[next.path];
-    $('#detailPlayLabel').textContent = prog && prog.time > 30 ? `Continuar EP ${next.index}` : `Reproduzir EP ${next.index}`;
+    const epLabel = next.season != null
+      ? `T${next.season} EP ${next.index}`
+      : `EP ${next.index}`;
+    $('#detailPlayLabel').textContent = prog && prog.time > 30 ? `Continuar ${epLabel}` : `Reproduzir ${epLabel}`;
     $('#detailPlayBtn').onclick = () => playFile(next.path);
 
-    const list = $('#episodeList');
-    list.innerHTML = '';
-    for (const ep of item.episodes) {
-      const p = state.progress[ep.path];
-      const ratio = p && p.length ? Math.min(1, p.time / p.length) : 0;
-      const li = document.createElement('li');
-      li.className = 'episode';
-      li.innerHTML = `
-        <div class="episode-num">${String(ep.index).padStart(2, '0')}</div>
-        <div>
-          <p class="episode-title">${escapeHtml(ep.title)}</p>
-          ${ratio > 0 ? `<div class="episode-progress"><span style="width:${(ratio * 100).toFixed(1)}%"></span></div>` : ''}
-        </div>
-        <div class="episode-meta">${p ? `${fmtTime(p.time)} / ${fmtTime(p.length)}` : ''}</div>
-      `;
-      li.addEventListener('click', () => playFile(ep.path));
-      list.appendChild(li);
-    }
+    renderSeasonTabs(item, next.season != null ? next.season : (item.seasons[0] && item.seasons[0].number));
   } else {
-    $('#detailMeta').textContent = 'Filme';
+    $('#detailMeta').textContent = item.year ? `Filme · ${item.year}` : 'Filme';
     const prog = state.progress[item.path];
     $('#detailPlayLabel').textContent = prog && prog.time > 30 ? 'Continuar' : 'Reproduzir';
     $('#detailPlayBtn').onclick = () => playFile(item.path);
     $('#episodeList').innerHTML = '';
+    $('#seasonTabs').innerHTML = '';
   }
 
   $('#detailOpenFolderBtn').onclick = () => window.api.openFolder(item.folder || item.path);
+}
+
+function renderSeasonTabs(item, activeSeasonNum) {
+  const tabs = $('#seasonTabs');
+  tabs.innerHTML = '';
+  if (!item.seasons || item.seasons.length === 0) return;
+
+  if (item.seasons.length > 1) {
+    for (const season of item.seasons) {
+      const btn = document.createElement('button');
+      btn.className = 'season-tab' + (season.number === activeSeasonNum ? ' active' : '');
+      btn.textContent = `Temporada ${season.number}`;
+      btn.addEventListener('click', () => renderSeasonTabs(item, season.number));
+      tabs.appendChild(btn);
+    }
+  }
+
+  const active = item.seasons.find((s) => s.number === activeSeasonNum) || item.seasons[0];
+  renderEpisodeList(active);
+}
+
+function renderEpisodeList(season) {
+  const list = $('#episodeList');
+  list.innerHTML = '';
+  for (const ep of season.episodes) {
+    const p = state.progress[ep.path];
+    const ratio = p && p.length ? Math.min(1, p.time / p.length) : 0;
+    const li = document.createElement('li');
+    li.className = 'episode';
+    li.innerHTML = `
+      <div class="episode-num">${String(ep.index).padStart(2, '0')}</div>
+      <div>
+        <p class="episode-title">${escapeHtml(ep.title)}</p>
+        ${ratio > 0 ? `<div class="episode-progress"><span style="width:${(ratio * 100).toFixed(1)}%"></span></div>` : ''}
+      </div>
+      <div class="episode-meta">${p ? `${fmtTime(p.time)} / ${fmtTime(p.length)}` : ''}</div>
+    `;
+    li.addEventListener('click', () => playFile(ep.path));
+    list.appendChild(li);
+  }
 }
 
 function closeDetail() {
@@ -273,6 +306,7 @@ async function renderSettings() {
     }
   }
   $('#vlcInfo').textContent = `VLC: ${cfg.vlcPath || 'auto-detectado em Program Files (configurar se não funcionar)'} · porta HTTP ${cfg.vlcPort}`;
+  $('#tmdbKeyInput').value = cfg.tmdbKey || '';
 }
 
 // ---------- Routing ----------
@@ -341,6 +375,46 @@ async function init() {
   $('#setVlcBtn').addEventListener('click', async () => {
     const res = await window.api.setVlcPath();
     if (res.ok) { showToast('Caminho do VLC salvo'); renderSettings(); }
+  });
+
+  // TMDB
+  $('#saveTmdbKeyBtn').addEventListener('click', async () => {
+    const key = $('#tmdbKeyInput').value.trim();
+    await window.api.setTmdbKey(key);
+    showToast(key ? 'Chave TMDB salva' : 'Chave TMDB removida');
+  });
+
+  $('#fetchMetaBtn').addEventListener('click', async () => {
+    const log = $('#metaLog');
+    log.classList.add('active');
+    log.innerHTML = 'Buscando metadados…\n';
+    showToast('Buscando metadados no TMDB…', 4000);
+    const res = await window.api.fetchAllMeta();
+    if (!res.ok) { showToast(res.error || 'Falhou'); return; }
+    state.library = res.library;
+    state.imageCache.clear();
+    await renderAll();
+    log.innerHTML += `\nConcluído: ${res.updated} atualizados, ${res.failed} sem resultado.`;
+    showToast(`Metadados atualizados (${res.updated})`);
+  });
+
+  $('#clearMetaBtn').addEventListener('click', async () => {
+    const res = await window.api.clearMeta();
+    state.library = res.library;
+    state.imageCache.clear();
+    await renderAll();
+    showToast('Cache de metadados limpo');
+    renderSettings();
+  });
+
+  window.api.onMetaProgress((d) => {
+    const log = $('#metaLog');
+    log.classList.add('active');
+    const cls = d.ok ? 'ok' : 'err';
+    const line = document.createElement('div');
+    line.innerHTML = `<span class="${cls}">${d.ok ? '✓' : '✗'}</span> ${escapeHtml(d.title)}${d.error ? ' — ' + escapeHtml(d.error) : ''}`;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
   });
 
   // Detail close

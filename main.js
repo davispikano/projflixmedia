@@ -3,6 +3,14 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const http = require('http');
+const https = require('https');
+const {
+  cleanTitle,
+  cleanEpisodeTitle,
+  detectSeasonNumber,
+  detectSeasonAndEpisode,
+  groupKeyFromName,
+} = require('./titleParser');
 
 // ---------- Storage ----------
 const userDir = app.getPath('userData');
@@ -20,11 +28,13 @@ function writeJson(p, data) {
   try { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, JSON.stringify(data, null, 2)); } catch (e) { console.error(e); }
 }
 
-let config = readJson(configPath, { folders: [], vlcPath: '', vlcPort: 9090, vlcPassword: 'mediaflix' });
+let config = readJson(configPath, { folders: [], vlcPath: '', vlcPort: 9090, vlcPassword: 'mediaflix', tmdbKey: '', tmdbLang: 'pt-BR' });
 let progress = readJson(progressPath, {}); // { [filePath]: { time, length, updatedAt } }
+let metaCache = readJson(path.join(userDir, 'meta-cache.json'), {}); // { [groupKey]: { title, banner, poster, overview, year, fetchedAt } }
 
 function saveConfig() { writeJson(configPath, config); }
 function saveProgress() { writeJson(progressPath, progress); }
+function saveMetaCache() { writeJson(path.join(userDir, 'meta-cache.json'), metaCache); }
 
 // ---------- Library scanning ----------
 function findBanner(dir) {
@@ -71,7 +81,11 @@ function naturalSort(a, b) {
 }
 
 function scanLibrary() {
-  const items = [];
+  // First, gather raw entries: each top-level child of every monitored folder
+  // becomes either a season-folder (groupable into a series) or a movie file.
+  const seriesByKey = new Map(); // groupKey -> aggregated series object
+  const movies = [];
+
   for (const folder of config.folders) {
     let entries;
     try { entries = fs.readdirSync(folder, { withFileTypes: true }); } catch { continue; }
@@ -82,38 +96,76 @@ function scanLibrary() {
         const videos = listVideosRecursive(full);
         if (!videos.length) continue;
         const banner = findBanner(full);
-        if (videos.length === 1) {
-          items.push({
+        videos.sort(naturalSort);
+
+        // Single-video folder: treat as movie unless folder name explicitly looks like a season
+        const looksLikeSeason = detectSeasonNumber(e.name) !== null;
+        if (videos.length === 1 && !looksLikeSeason) {
+          movies.push({
             id: full,
             type: 'movie',
-            title: e.name,
+            title: cleanTitle(e.name),
+            rawTitle: e.name,
             path: videos[0],
             banner,
             folder: full,
           });
-        } else {
-          videos.sort(naturalSort);
-          items.push({
-            id: full,
+          continue;
+        }
+
+        // Multi-video folder OR season-named folder => part of a series
+        const key = groupKeyFromName(e.name) || e.name.toLowerCase();
+        const seasonNum = detectSeasonNumber(e.name);
+
+        // Determine episode list for THIS folder, possibly split by per-file season info
+        // Some folders mix multiple seasons inside (rare); group by per-file season
+        const perSeason = new Map(); // seasonNum -> episodes[]
+        for (const v of videos) {
+          const base = path.basename(v);
+          const det = detectSeasonAndEpisode(base);
+          const s = det.season || seasonNum || 1;
+          if (!perSeason.has(s)) perSeason.set(s, []);
+          perSeason.get(s).push({
+            path: v,
+            file: base,
+            episodeNum: det.episode,
+          });
+        }
+
+        // Get-or-create the series aggregate
+        let series = seriesByKey.get(key);
+        if (!series) {
+          series = {
+            id: 'series:' + key,
             type: 'series',
-            title: e.name,
+            title: cleanTitle(e.name) || e.name,
+            rawTitle: e.name,
             banner,
             folder: full,
-            episodes: videos.map((v, i) => ({
-              id: v,
-              title: path.basename(v, path.extname(v)),
-              path: v,
-              index: i + 1,
-            })),
-          });
+            folders: [],
+            seasons: new Map(), // season number -> { number, folder, episodes: [] }
+          };
+          seriesByKey.set(key, series);
+        }
+        series.folders.push(full);
+        if (!series.banner && banner) series.banner = banner;
+
+        for (const [sNum, eps] of perSeason.entries()) {
+          let season = series.seasons.get(sNum);
+          if (!season) {
+            season = { number: sNum, folder: full, episodes: [] };
+            series.seasons.set(sNum, season);
+          }
+          for (const ep of eps) season.episodes.push(ep);
         }
       } else {
         const ext = path.extname(e.name).toLowerCase();
         if (VIDEO_EXT.has(ext)) {
-          items.push({
+          movies.push({
             id: full,
             type: 'movie',
-            title: path.basename(e.name, ext),
+            title: cleanTitle(e.name),
+            rawTitle: e.name,
             path: full,
             banner: null,
             folder,
@@ -122,7 +174,78 @@ function scanLibrary() {
       }
     }
   }
-  items.sort((a, b) => naturalSort(a.title, b.title));
+
+  // Finalize series: convert seasons map to array, sort, assign episode indices
+  const series = Array.from(seriesByKey.values()).map((s) => {
+    const seasons = Array.from(s.seasons.values())
+      .sort((a, b) => a.number - b.number)
+      .map((season) => {
+        season.episodes.sort((a, b) => {
+          if (a.episodeNum != null && b.episodeNum != null) return a.episodeNum - b.episodeNum;
+          return naturalSort(a.file, b.file);
+        });
+        season.episodes = season.episodes.map((ep, i) => ({
+          id: ep.path,
+          path: ep.path,
+          index: ep.episodeNum != null ? ep.episodeNum : i + 1,
+          title: cleanEpisodeTitle(ep.file),
+        }));
+        return season;
+      });
+
+    // Use the earliest folder name as canonical base for title (already cleaned)
+    // Try harder: the cleanest title from the group of folder names
+    const candidateTitles = s.folders.map((f) => cleanTitle(path.basename(f).replace(/[._\s-]*(season|temporada)[._\s-]*\d+.*$/i, '')));
+    const best = candidateTitles
+      .filter(Boolean)
+      .sort((a, b) => a.length - b.length)[0];
+    if (best) s.title = best;
+
+    // Apply meta cache override if present
+    const meta = metaCache[groupKeyFromName(s.title) || s.id];
+    if (meta) {
+      if (meta.title) s.title = meta.title;
+      if (meta.banner) s.banner = meta.banner;
+      s.overview = meta.overview;
+      s.year = meta.year;
+    }
+
+    // Flat episodes for backward-compat / easy "next episode" UI
+    const episodes = [];
+    let globalIdx = 0;
+    for (const season of seasons) {
+      for (const ep of season.episodes) {
+        episodes.push({ ...ep, season: season.number, globalIndex: ++globalIdx });
+      }
+    }
+
+    return {
+      id: s.id,
+      type: 'series',
+      title: s.title,
+      rawTitle: s.rawTitle,
+      banner: s.banner,
+      folder: s.folder,
+      folders: s.folders,
+      seasons,
+      episodes,
+      overview: s.overview,
+      year: s.year,
+    };
+  });
+
+  // Apply meta cache to movies too
+  for (const m of movies) {
+    const meta = metaCache[groupKeyFromName(m.title) || m.id];
+    if (meta) {
+      if (meta.title) m.title = meta.title;
+      if (meta.banner) m.banner = meta.banner;
+      m.overview = meta.overview;
+      m.year = meta.year;
+    }
+  }
+
+  const items = [...series, ...movies].sort((a, b) => naturalSort(a.title, b.title));
   writeJson(libraryPath, items);
   return items;
 }
@@ -279,6 +402,121 @@ ipcMain.handle('play', (_e, filePath) => playFile(filePath));
 ipcMain.handle('shell:openFolder', (_e, folder) => {
   shell.openPath(folder);
   return { ok: true };
+});
+
+// ---------- TMDB integration (optional) ----------
+function httpsGetJson(url) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { timeout: 8000, headers: { 'User-Agent': 'Mediaflix/0.2' } }, (res) => {
+      if (res.statusCode && res.statusCode >= 400) {
+        res.resume();
+        return reject(new Error('HTTP ' + res.statusCode));
+      }
+      let data = '';
+      res.on('data', (c) => (data += c));
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+  });
+}
+
+async function downloadToCache(url, fileName) {
+  const cacheDir = path.join(userDir, 'banners');
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const dest = path.join(cacheDir, fileName);
+  if (fs.existsSync(dest)) return dest;
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(dest);
+    https.get(url, (res) => {
+      if (res.statusCode && res.statusCode >= 400) {
+        file.close(); fs.unlink(dest, () => {});
+        return reject(new Error('HTTP ' + res.statusCode));
+      }
+      res.pipe(file);
+      file.on('finish', () => file.close(() => resolve(dest)));
+    }).on('error', (err) => {
+      file.close(); fs.unlink(dest, () => {}); reject(err);
+    });
+  });
+}
+
+async function tmdbLookup(title, type /* 'tv' | 'movie' */) {
+  if (!config.tmdbKey) throw new Error('Sem chave TMDB. Configure em Pastas → TMDB API Key.');
+  const lang = encodeURIComponent(config.tmdbLang || 'pt-BR');
+  const q = encodeURIComponent(title);
+  const url = `https://api.themoviedb.org/3/search/${type}?api_key=${config.tmdbKey}&language=${lang}&query=${q}&include_adult=false`;
+  const json = await httpsGetJson(url);
+  const first = (json.results || [])[0];
+  if (!first) return null;
+  const name = first.name || first.title;
+  const year = (first.first_air_date || first.release_date || '').slice(0, 4);
+  const result = {
+    title: name,
+    year: year || null,
+    overview: first.overview || '',
+    posterPath: first.poster_path,
+    backdropPath: first.backdrop_path,
+    fetchedAt: Date.now(),
+  };
+  // Download backdrop (banner) and poster locally, store paths
+  if (result.backdropPath) {
+    try {
+      const ext = path.extname(result.backdropPath) || '.jpg';
+      const fname = 'bd_' + Buffer.from(result.backdropPath).toString('base64url') + ext;
+      result.banner = await downloadToCache(`https://image.tmdb.org/t/p/w1280${result.backdropPath}`, fname);
+    } catch {}
+  }
+  if (result.posterPath) {
+    try {
+      const ext = path.extname(result.posterPath) || '.jpg';
+      const fname = 'p_' + Buffer.from(result.posterPath).toString('base64url') + ext;
+      result.poster = await downloadToCache(`https://image.tmdb.org/t/p/w500${result.posterPath}`, fname);
+    } catch {}
+  }
+  return result;
+}
+
+ipcMain.handle('config:setTmdbKey', (_e, key) => {
+  config.tmdbKey = (key || '').trim();
+  saveConfig();
+  return { ok: true };
+});
+
+ipcMain.handle('meta:fetchAll', async (event) => {
+  if (!config.tmdbKey) return { ok: false, error: 'Sem chave TMDB configurada.' };
+  const items = scanLibrary();
+  let updated = 0, failed = 0;
+  for (const it of items) {
+    const key = groupKeyFromName(it.title) || it.id;
+    if (metaCache[key] && metaCache[key].banner) continue; // already have
+    try {
+      const result = await tmdbLookup(it.title, it.type === 'series' ? 'tv' : 'movie');
+      if (result) {
+        metaCache[key] = result;
+        updated++;
+        event.sender.send('meta:progress', { title: it.title, ok: true });
+      } else {
+        failed++;
+        event.sender.send('meta:progress', { title: it.title, ok: false });
+      }
+    } catch (e) {
+      failed++;
+      event.sender.send('meta:progress', { title: it.title, ok: false, error: e.message });
+    }
+    // gentle pacing for TMDB rate limit
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  saveMetaCache();
+  return { ok: true, updated, failed, library: scanLibrary() };
+});
+
+ipcMain.handle('meta:clear', () => {
+  metaCache = {};
+  saveMetaCache();
+  return { ok: true, library: scanLibrary() };
 });
 
 // Expose local image files to the renderer via file:// — but we need to read them as data URLs because Electron with sandbox blocks file:// from custom origins. Easier: read as base64.
