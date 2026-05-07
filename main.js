@@ -167,7 +167,45 @@ function scanLibrary() {
         }
       } else {
         const ext = path.extname(e.name).toLowerCase();
-        if (VIDEO_EXT.has(ext)) {
+        if (!VIDEO_EXT.has(ext)) continue;
+
+        // If the file looks like an episode (has SxxExx or similar), group it
+        // as a series using the parent watched folder name as the show title.
+        const det = detectSeasonAndEpisode(e.name);
+        const isEpisode = det.season != null || det.episode != null;
+
+        if (isEpisode) {
+          const parentName = path.basename(folder);
+          const key = groupKeyFromName(parentName) || parentName.toLowerCase();
+          const banner = findBanner(folder);
+          let series = seriesByKey.get(key);
+          if (!series) {
+            series = {
+              id: 'series:' + key,
+              type: 'series',
+              title: cleanTitle(parentName) || parentName,
+              rawTitle: parentName,
+              banner,
+              folder,
+              folders: [folder],
+              seasons: new Map(),
+            };
+            seriesByKey.set(key, series);
+          } else if (!series.banner && banner) {
+            series.banner = banner;
+          }
+          const sNum = det.season || 1;
+          let season = series.seasons.get(sNum);
+          if (!season) {
+            season = { number: sNum, folder, episodes: [] };
+            series.seasons.set(sNum, season);
+          }
+          season.episodes.push({
+            path: full,
+            file: e.name,
+            episodeNum: det.episode,
+          });
+        } else {
           movies.push({
             id: full,
             type: 'movie',
@@ -464,10 +502,31 @@ async function downloadToCache(url, fileName) {
 async function tmdbLookup(title, type /* 'tv' | 'movie' */) {
   if (!config.tmdbKey) throw new Error('Sem chave TMDB. Configure em Pastas → TMDB API Key.');
   const lang = encodeURIComponent(config.tmdbLang || 'pt-BR');
-  const q = encodeURIComponent(title);
-  const url = `https://api.themoviedb.org/3/search/${type}?api_key=${config.tmdbKey}&language=${lang}&query=${q}&include_adult=false`;
-  const json = await httpsGetJson(url);
-  const first = (json.results || [])[0];
+
+  // Build a list of search variations to try until we get a hit
+  const variations = [];
+  const t = String(title).trim();
+  variations.push(t);
+  // Strip everything after a colon or dash subtitle
+  const colon = t.split(/\s[:\-–]\s|:\s/)[0].trim();
+  if (colon && colon !== t && colon.length > 2) variations.push(colon);
+  // Heuristic: keep just the first 4-5 significant words
+  const short = t.split(/\s+/).slice(0, 5).join(' ');
+  if (short && !variations.includes(short)) variations.push(short);
+
+  let first = null;
+  for (const variant of variations) {
+    const q = encodeURIComponent(variant);
+    // Try in user's language first, then en-US as fallback
+    for (const l of [lang, 'en-US']) {
+      const url = `https://api.themoviedb.org/3/search/${type}?api_key=${config.tmdbKey}&language=${l}&query=${q}&include_adult=false`;
+      try {
+        const json = await httpsGetJson(url);
+        if (json.results && json.results.length) { first = json.results[0]; break; }
+      } catch {}
+    }
+    if (first) break;
+  }
   if (!first) return null;
   return await buildMetaFromTmdbId(first.id, type);
 }
