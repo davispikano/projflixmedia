@@ -654,9 +654,32 @@ ipcMain.handle('meta:fetchAll', async (event) => {
   let updated = 0, failed = 0;
   for (const it of items) {
     const key = groupKeyFromName(it.title) || it.id;
-    if (metaCache[key] && metaCache[key].banner) continue; // already have
+    const cached = metaCache[key];
+    // For series, find which seasons are on disk but missing from the cache
+    const onDiskSeasons = it.type === 'series' && Array.isArray(it.seasons)
+      ? it.seasons.map((s) => s.number).filter((n) => n != null)
+      : [];
+    const missingSeasons = onDiskSeasons.filter((sn) => {
+      if (!cached || !cached.episodes) return true;
+      const m = cached.episodes[sn];
+      return !m || !Object.keys(m).length;
+    });
+    const hasBanner = cached && cached.banner;
+    // Skip only when banner is present AND no seasons are missing
+    if (hasBanner && missingSeasons.length === 0) continue;
     try {
-      const result = await tmdbLookup(it.title, it.type === 'series' ? 'tv' : 'movie');
+      let result = null;
+      if (cached && cached.tmdbId && missingSeasons.length && hasBanner) {
+        // Already identified: just backfill missing seasons via known TMDB id
+        const kindCached = cached.type || (it.type === 'series' ? 'tv' : 'movie');
+        result = await buildMetaFromTmdbId(cached.tmdbId, kindCached, missingSeasons);
+        if (result) {
+          // Preserve already-cached seasons and merge in the new ones
+          result.episodes = { ...(cached.episodes || {}), ...(result.episodes || {}) };
+        }
+      } else {
+        result = await tmdbLookup(it.title, it.type === 'series' ? 'tv' : 'movie');
+      }
       if (result) {
         metaCache[key] = result;
         updated++;
