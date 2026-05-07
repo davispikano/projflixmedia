@@ -171,8 +171,9 @@ async function buildCard(item, opts = {}) {
       if (item.type === 'series' && prog && prog.episode) return playFile(prog.episode.path);
       return playItem(item);
     }
-    if (item.type === 'series') openDetail(item);
-    else playItem(item);
+    // Always open detail (for both series and movies) so user can identify, see
+    // overview, and choose to play. Detail screen has a Reproduzir button on top.
+    openDetail(item);
   });
   return card;
 }
@@ -445,14 +446,26 @@ async function init() {
   // Nav
   $$('.nav-link').forEach((b) => b.addEventListener('click', () => route(b.dataset.route)));
 
-  // Add folder
+  // Add folder (then auto-fetch TMDB metadata if a key is configured)
   const addFolder = async () => {
     const res = await window.api.addFolder();
-    if (res.ok) {
-      state.library = res.library;
-      await renderAll();
-      route('home');
-      showToast('Pasta adicionada e biblioteca atualizada');
+    if (!res.ok) return;
+    state.library = res.library;
+    await renderAll();
+    route('home');
+    showToast('Pasta adicionada');
+    // Auto-fetch metadata in background so banners/episode names appear without
+    // the user having to click Configurações > Buscar metadados.
+    const cfg = await window.api.getConfig();
+    if (cfg && cfg.tmdbKey) {
+      showToast('Buscando metadados no TMDB…', 4000);
+      const meta = await window.api.fetchAllMeta();
+      if (meta && meta.ok) {
+        state.library = meta.library;
+        state.imageCache.clear();
+        await renderAll();
+        showToast(`Metadados atualizados (${meta.updated})`);
+      }
     }
   };
   $('#addFolderBtn').addEventListener('click', addFolder);

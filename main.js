@@ -129,8 +129,13 @@ function scanLibrary() {
         videos.sort(naturalSort);
 
         // Single-video folder: treat as movie unless folder name explicitly looks like a season
+        // OR the file itself looks like an episode (e.g. "The.Boys.S05E05....mkv")
         const looksLikeSeason = detectSeasonNumber(e.name) !== null;
-        if (videos.length === 1 && !looksLikeSeason) {
+        const singleFileLooksLikeEpisode = videos.length === 1 && (() => {
+          const det = detectSeasonAndEpisode(path.basename(videos[0]));
+          return det.season != null || det.episode != null;
+        })();
+        if (videos.length === 1 && !looksLikeSeason && !singleFileLooksLikeEpisode) {
           movies.push({
             id: full,
             type: 'movie',
