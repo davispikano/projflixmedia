@@ -566,6 +566,20 @@ async function init() {
   state.library = await window.api.getLibrary();
   await renderAll();
   if (!state.library.length) route('home');
+
+  // Restore + wire row view toggles (carousel <-> grid). Preference is persisted
+  // per row in localStorage so it survives restarts.
+  document.querySelectorAll('.row-toggle').forEach((btn) => {
+    const targetId = btn.dataset.target;
+    const section = document.getElementById(targetId);
+    if (!section) return;
+    const storageKey = 'rowView:' + targetId;
+    if (localStorage.getItem(storageKey) === 'grid') section.classList.add('grid');
+    btn.addEventListener('click', () => {
+      const isGrid = section.classList.toggle('grid');
+      localStorage.setItem(storageKey, isGrid ? 'grid' : 'row');
+    });
+  });
 }
 
 init().catch((e) => {

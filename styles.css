@@ -231,6 +231,34 @@ main {
 .row-track::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 999px; }
 .row-track::-webkit-scrollbar-track { background: transparent; }
 
+/* Grid view: wrap cards into multiple rows so the user scrolls vertically */
+.row.grid .row-track {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  overflow-x: visible;
+  gap: 18px 14px;
+}
+.row.grid .row-track .card { flex: initial; width: 100%; }
+
+.row-actions {
+  display: inline-flex; align-items: center; gap: 12px;
+}
+.row-toggle {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text-dim);
+  width: 30px; height: 30px;
+  border-radius: 8px;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  transition: border-color 0.2s var(--spring), color 0.2s var(--spring), background 0.2s var(--spring);
+}
+.row-toggle:hover { color: var(--text); border-color: rgba(255,255,255,0.2); }
+.row-toggle .icon-row { display: none; }
+.row.grid .row-toggle .icon-grid { display: none; }
+.row.grid .row-toggle .icon-row { display: inline; }
+.row.grid .row-toggle { color: var(--text); border-color: rgba(255,255,255,0.2); background: rgba(255,255,255,0.04); }
+
 /* ---------- Card ---------- */
 .card {
   position: relative;

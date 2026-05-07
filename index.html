@@ -47,7 +47,13 @@
       <section id="seriesRow" class="row hidden">
         <div class="row-head">
           <h2>Séries</h2>
-          <span class="row-count" id="seriesCount"></span>
+          <div class="row-actions">
+            <span class="row-count" id="seriesCount"></span>
+            <button class="row-toggle" data-target="seriesRow" title="Alternar visão em grade" aria-label="Alternar visão">
+              <svg class="icon-grid" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+              <svg class="icon-row" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+            </button>
+          </div>
         </div>
         <div class="row-track" id="seriesTrack"></div>
       </section>
@@ -55,7 +61,13 @@
       <section id="moviesRow" class="row hidden">
         <div class="row-head">
           <h2>Filmes</h2>
-          <span class="row-count" id="moviesCount"></span>
+          <div class="row-actions">
+            <span class="row-count" id="moviesCount"></span>
+            <button class="row-toggle" data-target="moviesRow" title="Alternar visão em grade" aria-label="Alternar visão">
+              <svg class="icon-grid" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+              <svg class="icon-row" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+            </button>
+          </div>
         </div>
         <div class="row-track" id="moviesTrack"></div>
       </section>
