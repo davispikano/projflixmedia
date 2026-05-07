@@ -269,8 +269,26 @@ function scanLibrary() {
     const best = candidateTitles.sort((a, b) => a.length - b.length)[0];
     if (best) s.title = best;
 
-    // Apply meta cache override if present
-    const meta = metaCache[groupKeyFromName(s.title) || s.id];
+    // Apply meta cache override if present. Look up by both the raw cleaned
+    // title and (after applying the override title) by the localized title,
+    // because previous versions may have stored entries under different keys
+    // (e.g. "how i met your mother" without episode names AND
+    // "como eu conheci sua m e" with episode names).
+    const tryKeys = new Set();
+    tryKeys.add(groupKeyFromName(s.title) || s.id);
+    let meta = metaCache[groupKeyFromName(s.title) || s.id];
+    if (meta && meta.title) {
+      const altKey = groupKeyFromName(meta.title);
+      if (altKey && metaCache[altKey]) {
+        const alt = metaCache[altKey];
+        // Prefer the entry that has episode names
+        if ((!meta.episodes || !Object.keys(meta.episodes).length) && alt.episodes) {
+          meta = { ...meta, ...alt, episodes: { ...(meta.episodes || {}), ...(alt.episodes || {}) } };
+        } else {
+          meta = { ...alt, ...meta, episodes: { ...(alt.episodes || {}), ...(meta.episodes || {}) } };
+        }
+      }
+    }
     if (meta) {
       if (meta.title) s.title = meta.title;
       if (meta.banner) s.banner = meta.banner;

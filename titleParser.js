@@ -48,7 +48,7 @@ function cleanEpisodeTitle(rawFile) {
   if (after && after[1]) {
     const inner = ptt.parse(normalizeName(after[1]));
     const candidate = inner && inner.title ? inner.title : normalizeName(after[1]);
-    if (candidate && candidate.length > 1 && !/^\d+$/.test(candidate)) {
+    if (candidate && candidate.length > 1 && !/^\d+$/.test(candidate) && !isTrivialTitle(candidate)) {
       return titleCase(candidate);
     }
   }
