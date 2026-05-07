@@ -897,7 +897,13 @@ function findImdbIdForTitle(title, year) {
 
 async function fetchImdbRatings(imdbId) {
   const url = `${IMDB_DATA_BASE}/${imdbId}.json`;
-  const seasons = await httpsGetJson(url);
+  let seasons;
+  try {
+    seasons = await httpsGetJson(url);
+  } catch (e) {
+    // 404 / not in dataset → return empty so caller can fall back gracefully
+    return { id: imdbId, average: null, seasons: {} };
+  }
   const seasonMap = {};
   let total = 0, count = 0;
   if (Array.isArray(seasons)) {
@@ -933,7 +939,6 @@ ipcMain.handle('imdb:fetchAll', async (event) => {
     const key = groupKeyFromName(it.title) || it.id;
     const cached = metaCache[key] || {};
     if (cached.imdb && cached.imdb.average != null) continue;
-
     // 1) Prefer the IMDb id we got from TMDB external_ids (works for any
     //    localized title — Como Eu Conheci Sua Mãe, Histórias de 85, etc.)
     let id = cached.imdbId || null;
@@ -961,9 +966,34 @@ ipcMain.handle('imdb:fetchAll', async (event) => {
     }
     try {
       const data = await fetchImdbRatings(id);
-      metaCache[key] = { ...metaCache[key], imdb: data, imdbId: id };
-      updated++;
-      event.sender && event.sender.send('imdb:progress', { title: it.title, ok: true, rating: data.average });
+      // Heatmap dataset may have the title but no usable episode ratings (very
+      // new shows, anthologies, etc.). In that case, fall back to TMDB's own
+      // vote_average so the user still sees a number.
+      if (!data || data.average == null) {
+        let tmdbAvg = null;
+        try {
+          if (config.tmdbKey && cached.tmdbId) {
+            const lang = encodeURIComponent(config.tmdbLang || 'pt-BR');
+            const kindCached = cached.type || (it.type === 'series' ? 'tv' : 'movie');
+            const det = await httpsGetJson(`https://api.themoviedb.org/3/${kindCached}/${cached.tmdbId}?api_key=${config.tmdbKey}&language=${lang}`);
+            if (typeof det.vote_average === 'number' && det.vote_average > 0) {
+              tmdbAvg = +det.vote_average.toFixed(1);
+            }
+          }
+        } catch {}
+        if (tmdbAvg != null) {
+          metaCache[key] = { ...metaCache[key], imdb: { id, average: tmdbAvg, source: 'tmdb', seasons: {} }, imdbId: id };
+          updated++;
+          event.sender && event.sender.send('imdb:progress', { title: it.title + ' (TMDB)', ok: true, rating: tmdbAvg });
+        } else {
+          missing++;
+          event.sender && event.sender.send('imdb:progress', { title: it.title, ok: false, error: 'sem rating disponível' });
+        }
+      } else {
+        metaCache[key] = { ...metaCache[key], imdb: { ...data, source: 'imdb' }, imdbId: id };
+        updated++;
+        event.sender && event.sender.send('imdb:progress', { title: it.title, ok: true, rating: data.average });
+      }
     } catch (e) {
       missing++;
       event.sender && event.sender.send('imdb:progress', { title: it.title, ok: false, error: e.message });
