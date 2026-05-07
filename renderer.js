@@ -142,7 +142,8 @@ function escapeHtml(s) {
 }
 
 // ---------- Cards / Rows ----------
-async function buildCard(item) {
+async function buildCard(item, opts = {}) {
+  const { resumeMode = false } = opts;
   const card = document.createElement('div');
   card.className = 'card';
   const prog = itemProgress(item);
@@ -155,15 +156,21 @@ async function buildCard(item) {
     <div class="card-img ${bg ? '' : 'fallback'}" ${bg ? `style="background-image:url('${bg}')"` : ''}></div>
     <div class="card-fade"></div>
     <span class="card-badge">${sub}</span>
+    ${resumeMode ? '<span class="card-resume" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg></span>' : ''}
     <div class="card-meta">
       <h3 class="card-title">${escapeHtml(item.title)}</h3>
       <span class="card-sub">${item.type === 'series' && prog && prog.episode
-        ? `EP ${prog.episode.index} · ${Math.round(prog.ratio * 100)}%`
-        : (prog ? `${Math.round(prog.ratio * 100)}% assistido` : '')}</span>
+        ? `EP ${prog.episode.index}${prog.ratio ? ' · ' + Math.round(prog.ratio * 100) + '%' : ''}`
+        : (prog && prog.ratio ? `${Math.round(prog.ratio * 100)}% assistido` : '')}</span>
     </div>
-    ${prog ? `<div class="card-progress"><span style="width:${(prog.ratio * 100).toFixed(1)}%"></span></div>` : ''}
+    ${prog && prog.ratio ? `<div class="card-progress"><span style="width:${(prog.ratio * 100).toFixed(1)}%"></span></div>` : ''}
   `;
   card.addEventListener('click', () => {
+    if (resumeMode) {
+      // Resume: play the exact last-opened episode (or movie itself)
+      if (item.type === 'series' && prog && prog.episode) return playFile(prog.episode.path);
+      return playItem(item);
+    }
     if (item.type === 'series') openDetail(item);
     else playItem(item);
   });
@@ -182,20 +189,19 @@ async function renderRows() {
     .map((x) => x.i)
     .slice(0, 12);
 
-  await fillRow('#continueRow', '#continueTrack', '#continueCount', continueItems);
+  await fillRow('#continueRow', '#continueTrack', '#continueCount', continueItems, { resumeMode: true });
   await fillRow('#seriesRow', '#seriesTrack', '#seriesCount', series);
   await fillRow('#moviesRow', '#moviesTrack', '#moviesCount', movies);
 }
 
-async function fillRow(rowSel, trackSel, countSel, items) {
+async function fillRow(rowSel, trackSel, countSel, items, opts = {}) {
   const row = $(rowSel), track = $(trackSel), count = $(countSel);
   if (!items.length) { row.classList.add('hidden'); return; }
   row.classList.remove('hidden');
   count.textContent = String(items.length).padStart(2, '0');
   track.innerHTML = '';
-  // Build sequentially to await loadImage but it's cached
   for (const item of items) {
-    track.appendChild(await buildCard(item));
+    track.appendChild(await buildCard(item, opts));
   }
 }
 
