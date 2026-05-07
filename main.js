@@ -81,6 +81,13 @@ function naturalSort(a, b) {
 }
 
 function scanLibrary() {
+  // Prune monitored folders that no longer exist on disk
+  const before = config.folders.length;
+  config.folders = config.folders.filter((f) => {
+    try { return fs.statSync(f).isDirectory(); } catch { return false; }
+  });
+  if (config.folders.length !== before) saveConfig();
+
   // First, gather raw entries: each top-level child of every monitored folder
   // becomes either a season-folder (groupable into a series) or a movie file.
   const seriesByKey = new Map(); // groupKey -> aggregated series object
@@ -208,6 +215,17 @@ function scanLibrary() {
       if (meta.banner) s.banner = meta.banner;
       s.overview = meta.overview;
       s.year = meta.year;
+      // Override episode titles with TMDB names when available
+      if (meta.episodes) {
+        for (const season of seasons) {
+          const epMap = meta.episodes[season.number];
+          if (!epMap) continue;
+          for (const ep of season.episodes) {
+            const tmdbName = epMap[ep.index];
+            if (tmdbName) ep.title = tmdbName;
+          }
+        }
+      }
     }
 
     // Flat episodes for backward-compat / easy "next episode" UI
@@ -451,30 +469,59 @@ async function tmdbLookup(title, type /* 'tv' | 'movie' */) {
   const json = await httpsGetJson(url);
   const first = (json.results || [])[0];
   if (!first) return null;
-  const name = first.name || first.title;
-  const year = (first.first_air_date || first.release_date || '').slice(0, 4);
+  return await buildMetaFromTmdbId(first.id, type);
+}
+
+// Fetch full meta (with optional season episode names) for a chosen TMDB id
+async function buildMetaFromTmdbId(tmdbId, type /* 'tv' | 'movie' */, neededSeasons /* number[] | null */) {
+  const lang = encodeURIComponent(config.tmdbLang || 'pt-BR');
+  const detailUrl = `https://api.themoviedb.org/3/${type}/${tmdbId}?api_key=${config.tmdbKey}&language=${lang}`;
+  const json = await httpsGetJson(detailUrl);
+  const name = json.name || json.title;
+  const year = (json.first_air_date || json.release_date || '').slice(0, 4);
   const result = {
+    tmdbId,
+    type,
     title: name,
     year: year || null,
-    overview: first.overview || '',
-    posterPath: first.poster_path,
-    backdropPath: first.backdrop_path,
+    overview: json.overview || '',
+    posterPath: json.poster_path,
+    backdropPath: json.backdrop_path,
     fetchedAt: Date.now(),
+    episodes: {}, // { [seasonNumber]: { [episodeNumber]: name } }
   };
-  // Download backdrop (banner) and poster locally, store paths
-  if (result.backdropPath) {
+  if (json.backdrop_path) {
     try {
-      const ext = path.extname(result.backdropPath) || '.jpg';
-      const fname = 'bd_' + Buffer.from(result.backdropPath).toString('base64url') + ext;
-      result.banner = await downloadToCache(`https://image.tmdb.org/t/p/w1280${result.backdropPath}`, fname);
+      const ext = path.extname(json.backdrop_path) || '.jpg';
+      const fname = 'bd_' + Buffer.from(json.backdrop_path).toString('base64url') + ext;
+      result.banner = await downloadToCache(`https://image.tmdb.org/t/p/w1280${json.backdrop_path}`, fname);
     } catch {}
   }
-  if (result.posterPath) {
+  if (json.poster_path) {
     try {
-      const ext = path.extname(result.posterPath) || '.jpg';
-      const fname = 'p_' + Buffer.from(result.posterPath).toString('base64url') + ext;
-      result.poster = await downloadToCache(`https://image.tmdb.org/t/p/w500${result.posterPath}`, fname);
+      const ext = path.extname(json.poster_path) || '.jpg';
+      const fname = 'p_' + Buffer.from(json.poster_path).toString('base64url') + ext;
+      result.poster = await downloadToCache(`https://image.tmdb.org/t/p/w500${json.poster_path}`, fname);
     } catch {}
+  }
+  // For TV: fetch episode names per season
+  if (type === 'tv' && Array.isArray(json.seasons)) {
+    const seasonsToFetch = json.seasons
+      .map((s) => s.season_number)
+      .filter((n) => n != null && n > 0)
+      .filter((n) => !neededSeasons || neededSeasons.includes(n));
+    for (const sn of seasonsToFetch) {
+      try {
+        const sUrl = `https://api.themoviedb.org/3/tv/${tmdbId}/season/${sn}?api_key=${config.tmdbKey}&language=${lang}`;
+        const sjson = await httpsGetJson(sUrl);
+        const map = {};
+        for (const ep of sjson.episodes || []) {
+          if (ep.episode_number != null && ep.name) map[ep.episode_number] = ep.name;
+        }
+        result.episodes[sn] = map;
+        await new Promise((r) => setTimeout(r, 150));
+      } catch {}
+    }
   }
   return result;
 }
@@ -517,6 +564,58 @@ ipcMain.handle('meta:clear', () => {
   metaCache = {};
   saveMetaCache();
   return { ok: true, library: scanLibrary() };
+});
+
+// Search TMDB by free-text query and return up to 10 candidates
+ipcMain.handle('meta:search', async (_e, query, type) => {
+  if (!config.tmdbKey) return { ok: false, error: 'Sem chave TMDB configurada.' };
+  const lang = encodeURIComponent(config.tmdbLang || 'pt-BR');
+  const q = encodeURIComponent(query);
+  const kind = type === 'series' ? 'tv' : type === 'movie' ? 'movie' : 'multi';
+  try {
+    const url = `https://api.themoviedb.org/3/search/${kind}?api_key=${config.tmdbKey}&language=${lang}&query=${q}&include_adult=false`;
+    const json = await httpsGetJson(url);
+    const results = (json.results || []).slice(0, 10).map((r) => ({
+      id: r.id,
+      mediaType: r.media_type || (kind === 'multi' ? null : kind),
+      title: r.name || r.title || 'Sem título',
+      year: (r.first_air_date || r.release_date || '').slice(0, 4),
+      overview: r.overview || '',
+      posterUrl: r.poster_path ? `https://image.tmdb.org/t/p/w200${r.poster_path}` : null,
+    }));
+    return { ok: true, results };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+// Apply a chosen TMDB result to a specific library item
+ipcMain.handle('meta:apply', async (_e, itemTitle, itemType, tmdbId, mediaType) => {
+  if (!config.tmdbKey) return { ok: false, error: 'Sem chave TMDB configurada.' };
+  const kind = mediaType === 'tv' || itemType === 'series' ? 'tv' : 'movie';
+  try {
+    const result = await buildMetaFromTmdbId(tmdbId, kind);
+    const key = groupKeyFromName(itemTitle) || itemTitle.toLowerCase();
+    metaCache[key] = result;
+    saveMetaCache();
+    return { ok: true, library: scanLibrary() };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+// Hard reset: clear meta cache + library file + progress for missing files
+ipcMain.handle('library:resetCache', () => {
+  metaCache = {};
+  saveMetaCache();
+  try { fs.unlinkSync(libraryPath); } catch {}
+  // Drop progress entries for files that no longer exist
+  let pruned = 0;
+  for (const filePath of Object.keys(progress)) {
+    try { fs.statSync(filePath); } catch { delete progress[filePath]; pruned++; }
+  }
+  if (pruned) saveProgress();
+  return { ok: true, library: scanLibrary(), prunedProgress: pruned };
 });
 
 // Expose local image files to the renderer via file:// — but we need to read them as data URLs because Electron with sandbox blocks file:// from custom origins. Easier: read as base64.

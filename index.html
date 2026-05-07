@@ -2,7 +2,7 @@
 <html lang="pt-br">
   <head>
     <meta charset="utf-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self' data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.cdnfonts.com; font-src 'self' data: https://fonts.gstatic.com https://fonts.cdnfonts.com; img-src 'self' data:; script-src 'self';" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.cdnfonts.com; font-src 'self' data: https://fonts.gstatic.com https://fonts.cdnfonts.com; img-src 'self' data: https://image.tmdb.org; script-src 'self'; connect-src 'self';" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -94,6 +94,7 @@
         <div class="settings-row">
           <button class="btn-primary" id="fetchMetaBtn">Buscar metadados agora</button>
           <button class="btn-ghost" id="clearMetaBtn">Limpar cache de metadados</button>
+          <button class="btn-ghost" id="resetCacheBtn">Resetar biblioteca</button>
         </div>
         <div class="meta-log muted" id="metaLog"></div>
       </section>
@@ -118,6 +119,7 @@
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg>
               <span id="detailPlayLabel">Reproduzir</span>
             </button>
+            <button class="btn-ghost" id="detailIdentifyBtn">Identificar no TMDB</button>
             <button class="btn-ghost" id="detailOpenFolderBtn">Abrir pasta</button>
           </div>
         </header>
@@ -127,6 +129,29 @@
     </div>
 
     <div id="toast" class="toast hidden"></div>
+
+    <!-- Manual TMDB search modal -->
+    <div id="searchModal" class="modal hidden">
+      <div class="modal-backdrop" id="searchModalClose"></div>
+      <div class="modal-card">
+        <header class="modal-head">
+          <h2>Identificar no TMDB</h2>
+          <button class="icon-btn" id="searchModalCloseBtn" aria-label="Fechar">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </header>
+        <div class="modal-row">
+          <input type="text" id="searchInput" class="text-input" placeholder="Ex: Malcolm in the Middle" />
+          <select id="searchType" class="text-input" style="max-width:140px">
+            <option value="multi">Tudo</option>
+            <option value="series">Série (TV)</option>
+            <option value="movie">Filme</option>
+          </select>
+          <button class="btn-primary" id="searchGoBtn">Buscar</button>
+        </div>
+        <div id="searchResults" class="search-results"></div>
+      </div>
+    </div>
 
     <script src="renderer.js"></script>
   </body>

@@ -211,6 +211,7 @@ async function openDetail(item) {
   }
 
   $('#detailOpenFolderBtn').onclick = () => window.api.openFolder(item.folder || item.path);
+  $('#detailIdentifyBtn').onclick = () => openSearchModal(item);
 }
 
 function renderSeasonTabs(item, activeSeasonNum) {
@@ -256,6 +257,63 @@ function renderEpisodeList(season) {
 function closeDetail() {
   $('#detail').classList.add('hidden');
   state.currentDetail = null;
+}
+
+// ---------- Manual TMDB search ----------
+function openSearchModal(item) {
+  state.searchingFor = item;
+  $('#searchInput').value = item.title || '';
+  $('#searchType').value = item.type === 'series' ? 'series' : item.type === 'movie' ? 'movie' : 'multi';
+  $('#searchResults').innerHTML = '';
+  $('#searchModal').classList.remove('hidden');
+  setTimeout(() => $('#searchInput').focus(), 50);
+  runSearch();
+}
+
+function closeSearchModal() {
+  $('#searchModal').classList.add('hidden');
+  state.searchingFor = null;
+}
+
+async function runSearch() {
+  const q = $('#searchInput').value.trim();
+  const type = $('#searchType').value;
+  const target = $('#searchResults');
+  if (!q) { target.innerHTML = '<div class="search-empty">Digite algo para buscar</div>'; return; }
+  target.innerHTML = '<div class="search-empty">Buscando…</div>';
+  const res = await window.api.searchMeta(q, type);
+  if (!res.ok) { target.innerHTML = `<div class="search-empty">${escapeHtml(res.error || 'Erro')}</div>`; return; }
+  if (!res.results.length) { target.innerHTML = '<div class="search-empty">Nenhum resultado</div>'; return; }
+  target.innerHTML = '';
+  for (const r of res.results) {
+    const row = document.createElement('div');
+    row.className = 'search-result';
+    row.innerHTML = `
+      <div class="search-poster" ${r.posterUrl ? `style="background-image:url('${r.posterUrl}')"` : ''}></div>
+      <div class="search-info">
+        <h3>${escapeHtml(r.title)}</h3>
+        <p>${escapeHtml(r.overview || 'Sem sinopse')}</p>
+      </div>
+      <div class="search-meta">${escapeHtml(r.year || '')} · ${(r.mediaType || '').toUpperCase()}</div>
+    `;
+    row.addEventListener('click', async () => {
+      const item = state.searchingFor;
+      if (!item) return;
+      showToast('Aplicando metadados…');
+      const apply = await window.api.applyMeta(item.title, item.type, r.id, r.mediaType);
+      if (!apply.ok) { showToast(apply.error || 'Falhou'); return; }
+      state.library = apply.library;
+      state.imageCache.clear();
+      closeSearchModal();
+      await renderAll();
+      // Reopen detail with the updated item, by matched title
+      const updated = state.library.find((x) => x.title.toLowerCase() === r.title.toLowerCase()) ||
+                      state.library.find((x) => x.id === item.id);
+      if (updated) openDetail(updated);
+      showToast('Metadados aplicados');
+    });
+    target.appendChild(row);
+  }
 }
 
 // ---------- Playback ----------
@@ -405,6 +463,25 @@ async function init() {
     await renderAll();
     showToast('Cache de metadados limpo');
     renderSettings();
+  });
+
+  $('#resetCacheBtn').addEventListener('click', async () => {
+    const res = await window.api.resetCache();
+    state.library = res.library;
+    state.progress = await window.api.getProgress();
+    state.imageCache.clear();
+    await renderAll();
+    showToast(`Biblioteca resetada${res.prunedProgress ? ` (${res.prunedProgress} progressos órfãos removidos)` : ''}`);
+    renderSettings();
+  });
+
+  // Manual TMDB search modal
+  $('#searchModalClose').addEventListener('click', closeSearchModal);
+  $('#searchModalCloseBtn').addEventListener('click', closeSearchModal);
+  $('#searchGoBtn').addEventListener('click', runSearch);
+  $('#searchInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') runSearch(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !$('#searchModal').classList.contains('hidden')) closeSearchModal();
   });
 
   window.api.onMetaProgress((d) => {
