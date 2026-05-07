@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="pt-br">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.cdnfonts.com; font-src 'self' data: https://fonts.gstatic.com https://fonts.cdnfonts.com; img-src 'self' data:; script-src 'self';" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+    <title>Mediaflix</title>
+  </head>
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        <span class="brand-name">Mediaflix</span>
+      </div>
+      <nav class="topnav">
+        <button class="nav-link active" data-route="home">Biblioteca</button>
+        <button class="nav-link" data-route="settings">Pastas</button>
+      </nav>
+      <div class="topbar-actions">
+        <button class="btn-ghost" id="rescanBtn" title="Reescanear">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M21 12a9 9 0 1 1-3.2-6.9"/><path d="M21 4v5h-5"/></svg>
+          <span>Reescanear</span>
+        </button>
+        <button class="btn-primary" id="addFolderBtn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+          <span>Adicionar pasta</span>
+        </button>
+      </div>
+    </header>
+
+    <main id="app">
+      <section id="hero" class="hero hero-skeleton" aria-busy="true"></section>
+
+      <section id="continueRow" class="row hidden">
+        <div class="row-head">
+          <h2>Continuar assistindo</h2>
+          <span class="row-count" id="continueCount"></span>
+        </div>
+        <div class="row-track" id="continueTrack"></div>
+      </section>
+
+      <section id="seriesRow" class="row hidden">
+        <div class="row-head">
+          <h2>Séries</h2>
+          <span class="row-count" id="seriesCount"></span>
+        </div>
+        <div class="row-track" id="seriesTrack"></div>
+      </section>
+
+      <section id="moviesRow" class="row hidden">
+        <div class="row-head">
+          <h2>Filmes</h2>
+          <span class="row-count" id="moviesCount"></span>
+        </div>
+        <div class="row-track" id="moviesTrack"></div>
+      </section>
+
+      <section id="empty" class="empty hidden">
+        <div class="empty-card">
+          <h2>Sua biblioteca está vazia</h2>
+          <p>Adicione uma pasta com seus filmes e séries para começar. Cada subpasta vira uma série; cada arquivo de vídeo solto vira um filme.</p>
+          <button class="btn-primary" id="emptyAddBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            <span>Adicionar pasta</span>
+          </button>
+        </div>
+      </section>
+
+      <section id="settings" class="settings hidden">
+        <div class="settings-head">
+          <h2>Pastas monitoradas</h2>
+          <p class="muted">Aponte para diretórios onde você guarda séries e filmes. Subpastas com vários arquivos de vídeo são tratadas como séries.</p>
+        </div>
+        <ul id="folderList" class="folder-list"></ul>
+        <div class="settings-row">
+          <button class="btn-primary" id="settingsAddBtn">Adicionar pasta</button>
+          <button class="btn-ghost" id="setVlcBtn">Definir caminho do VLC</button>
+        </div>
+        <div class="vlc-info muted" id="vlcInfo"></div>
+      </section>
+    </main>
+
+    <!-- Series detail overlay -->
+    <div id="detail" class="detail hidden">
+      <div class="detail-bg" id="detailBg"></div>
+      <div class="detail-shade"></div>
+      <button class="detail-close" id="detailClose" aria-label="Fechar">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+      <div class="detail-inner">
+        <header class="detail-head">
+          <div>
+            <span class="kicker" id="detailKicker">Série</span>
+            <h1 id="detailTitle"></h1>
+            <p class="muted" id="detailMeta"></p>
+          </div>
+          <div class="detail-actions">
+            <button class="btn-primary" id="detailPlayBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg>
+              <span id="detailPlayLabel">Reproduzir</span>
+            </button>
+            <button class="btn-ghost" id="detailOpenFolderBtn">Abrir pasta</button>
+          </div>
+        </header>
+        <ul id="episodeList" class="episode-list"></ul>
+      </div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>

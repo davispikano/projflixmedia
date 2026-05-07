@@ -1,0 +1,30 @@
+{
+  "name": "mediaflix",
+  "version": "0.1.0",
+  "description": "Netflix-like local media manager for Windows. Plays via VLC and remembers where you stopped.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.mediaflix.app",
+    "productName": "Mediaflix",
+    "win": {
+      "target": "nsis"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer.js",
+      "index.html",
+      "styles.css"
+    ]
+  }
+}
