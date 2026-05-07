@@ -305,8 +305,15 @@ function scanLibrary() {
           const epMap = meta.episodes[season.number];
           if (!epMap) continue;
           for (const ep of season.episodes) {
-            const tmdbName = epMap[ep.index];
-            if (tmdbName) ep.title = tmdbName;
+            const entry = epMap[ep.index];
+            if (!entry) continue;
+            if (typeof entry === 'string') {
+              if (entry) ep.title = entry;
+            } else {
+              if (entry.name) ep.title = entry.name;
+              if (entry.overview) ep.overview = entry.overview;
+              if (entry.airDate) ep.airDate = entry.airDate;
+            }
           }
         }
       }
@@ -709,7 +716,15 @@ async function buildMetaFromTmdbId(tmdbId, type /* 'tv' | 'movie' */, neededSeas
         const sjson = await httpsGetJson(sUrl);
         const map = {};
         for (const ep of sjson.episodes || []) {
-          if (ep.episode_number != null && ep.name) map[ep.episode_number] = ep.name;
+          if (ep.episode_number == null) continue;
+          // Store as object so we can include overview, air date, etc.
+          // The renderer accepts both strings (legacy) and objects.
+          map[ep.episode_number] = {
+            name: ep.name || null,
+            overview: ep.overview || null,
+            airDate: ep.air_date || null,
+            stillPath: ep.still_path || null,
+          };
         }
         result.episodes[sn] = map;
         await new Promise((r) => setTimeout(r, 150));

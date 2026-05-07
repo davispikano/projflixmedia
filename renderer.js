@@ -217,8 +217,7 @@ async function buildDiscoverCard(item) {
     </div>
   `;
   card.addEventListener('click', () => {
-    const url = item.imdbUrl || `https://www.themoviedb.org/${item.kind}/${item.tmdbId}`;
-    if (window.api.openExternal) window.api.openExternal(url);
+    openDiscoverDetail(item);
   });
   return card;
 }
@@ -268,6 +267,38 @@ async function openDetail(item) {
   $('#detailBg').style.backgroundImage = bg ? `url('${bg}')` : 'linear-gradient(135deg,#1a1a1f,#0a0a0b)';
   $('#detailKicker').textContent = item.type === 'series' ? 'Série' : 'Filme';
   $('#detailTitle').textContent = item.title;
+  $('#detailOverview').textContent = item.overview || '';
+
+  // Big rating block (IMDb preferred). Computes best episode if we have
+  // per-episode ratings, so the user sees the show's quality at a glance.
+  const ratingEl = $('#detailRating');
+  const r = item.imdbRating;
+  if (r) {
+    ratingEl.hidden = false;
+    $('#detailRatingValue').textContent = r.toFixed(1);
+    $('#detailRatingSource').textContent = item.imdbId ? 'IMDb' : 'TMDB';
+    let bestStr = '';
+    if (item.type === 'series' && Array.isArray(item.episodes)) {
+      let best = null;
+      for (const ep of item.episodes) {
+        if (typeof ep.imdbRating === 'number' && (!best || ep.imdbRating > best.imdbRating)) best = ep;
+      }
+      if (best) {
+        bestStr = `Melhor episódio<br><b>T${best.season} EP ${best.index}</b> · ★ ${best.imdbRating.toFixed(1)}`;
+      }
+    }
+    $('#detailRatingBest').innerHTML = bestStr;
+    $('#detailRatingBest').style.display = bestStr ? '' : 'none';
+  } else {
+    ratingEl.hidden = true;
+  }
+
+  // Reset discover-only buttons (this is the local-detail flow)
+  $('#detailAddFolderBtn').classList.add('hidden');
+  $('#detailImdbBtn').classList.add('hidden');
+  $('#detailPlayBtn').classList.remove('hidden');
+  $('#detailOpenFolderBtn').classList.remove('hidden');
+  $('#detailIdentifyBtn').classList.remove('hidden');
 
   if (item.type === 'series') {
     const seasonCount = item.seasons ? item.seasons.length : 1;
@@ -329,10 +360,14 @@ function renderEpisodeList(season) {
     li.innerHTML = `
       <div class="episode-num">${String(ep.index).padStart(2, '0')}</div>
       <div>
-        <p class="episode-title">${escapeHtml(ep.title)}${ep.imdbRating ? ` <span class="episode-rating">★ ${ep.imdbRating.toFixed(1)}</span>` : ''}</p>
+        <p class="episode-title">${escapeHtml(ep.title)}</p>
+        ${ep.overview ? `<p class="episode-overview">${escapeHtml(ep.overview)}</p>` : ''}
         ${ratio > 0 ? `<div class="episode-progress"><span style="width:${(ratio * 100).toFixed(1)}%"></span></div>` : ''}
       </div>
-      <div class="episode-meta">${p ? `${fmtTime(p.time)} / ${fmtTime(p.length)}` : ''}</div>
+      <div class="episode-meta">
+        ${typeof ep.imdbRating === 'number' ? `<span class="episode-rating-big">★ ${ep.imdbRating.toFixed(1)}</span>` : ''}
+        <span class="episode-time">${p ? `${fmtTime(p.time)} / ${fmtTime(p.length)}` : ''}</span>
+      </div>
     `;
     li.addEventListener('click', () => playFile(ep.path));
     list.appendChild(li);
@@ -342,6 +377,93 @@ function renderEpisodeList(season) {
 function closeDetail() {
   $('#detail').classList.add('hidden');
   state.currentDetail = null;
+}
+
+// Find a local library item that matches the given title (case + accent
+// insensitive). Used to deep-link discover cards into the local detail view
+// when the user already has the show/movie on disk.
+function findLocalMatch(title) {
+  if (!title) return null;
+  const norm = (s) => String(s || '').toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '');
+  const target = norm(title);
+  if (!target) return null;
+  return state.library.find((it) => norm(it.title) === target || norm(it.rawTitle) === target) || null;
+}
+
+async function openDiscoverDetail(item) {
+  // If already in the user's library, open the normal local detail.
+  const local = findLocalMatch(item.title);
+  if (local) return openDetail(local);
+
+  state.currentDetail = item;
+  const d = $('#detail');
+  d.classList.remove('hidden');
+
+  const bg = item.banner ? await loadImage(item.banner) : null;
+  $('#detailBg').style.backgroundImage = bg ? `url('${bg}')` : 'linear-gradient(135deg,#1a1a1f,#0a0a0b)';
+  $('#detailKicker').textContent = item.kind === 'tv' ? 'Série · Em alta' : 'Filme · Em alta';
+  $('#detailTitle').textContent = item.title;
+  const metaParts = [];
+  if (item.year) metaParts.push(item.year);
+  const r = item.imdbRating || item.tmdbRating;
+  if (r) metaParts.push(`${item.imdbRating ? 'IMDb' : 'TMDB'} ${r.toFixed(1)}`);
+  metaParts.push('Não está na sua biblioteca');
+  $('#detailMeta').textContent = metaParts.join(' · ');
+  $('#detailOverview').textContent = item.overview || '';
+
+  // Show the big rating block on discover too if we have a number
+  const ratingEl2 = $('#detailRating');
+  const r2 = item.imdbRating || item.tmdbRating;
+  if (r2) {
+    ratingEl2.hidden = false;
+    $('#detailRatingValue').textContent = r2.toFixed(1);
+    $('#detailRatingSource').textContent = item.imdbRating ? 'IMDb' : 'TMDB';
+    $('#detailRatingBest').innerHTML = '';
+    $('#detailRatingBest').style.display = 'none';
+  } else {
+    ratingEl2.hidden = true;
+  }
+
+  // Empty episode list (we don't have local files yet)
+  $('#episodeList').innerHTML = '';
+  $('#seasonTabs').innerHTML = '';
+
+  // Discover-only buttons
+  $('#detailPlayBtn').classList.add('hidden');
+  $('#detailOpenFolderBtn').classList.add('hidden');
+  $('#detailIdentifyBtn').classList.add('hidden');
+  const addBtn = $('#detailAddFolderBtn');
+  addBtn.classList.remove('hidden');
+  addBtn.onclick = async () => {
+    const res = await window.api.addFolder();
+    if (!res || !res.ok) return;
+    state.library = res.library;
+    await renderAll();
+    showToast('Pasta adicionada');
+    // Auto-fetch metadata so the new title gets banner + episode names
+    const cfg = await window.api.getConfig();
+    if (cfg && cfg.tmdbKey) {
+      const meta = await window.api.fetchAllMeta();
+      if (meta && meta.ok) {
+        state.library = meta.library;
+        state.imageCache.clear();
+        await renderAll();
+      }
+    }
+    // After adding, try to deep-link the user to the freshly added local item.
+    const newLocal = findLocalMatch(item.title);
+    if (newLocal) openDetail(newLocal);
+    else closeDetail();
+  };
+  const imdbBtn = $('#detailImdbBtn');
+  if (item.imdbUrl) {
+    imdbBtn.classList.remove('hidden');
+    imdbBtn.onclick = () => window.api.openExternal(item.imdbUrl);
+  } else {
+    imdbBtn.classList.add('hidden');
+  }
 }
 
 // ---------- Manual TMDB search ----------

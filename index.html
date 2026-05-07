@@ -149,14 +149,28 @@
             <span class="kicker" id="detailKicker">Série</span>
             <h1 id="detailTitle"></h1>
             <p class="muted" id="detailMeta"></p>
+            <div class="rating-strip" id="detailRating" hidden>
+              <div class="rating-big">
+                <span class="rating-star">★</span>
+                <span class="rating-value" id="detailRatingValue">—</span>
+                <span class="rating-source" id="detailRatingSource">IMDb</span>
+              </div>
+              <div class="rating-best" id="detailRatingBest"></div>
+            </div>
+            <p class="detail-overview" id="detailOverview"></p>
           </div>
           <div class="detail-actions">
             <button class="btn-primary" id="detailPlayBtn">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg>
               <span id="detailPlayLabel">Reproduzir</span>
             </button>
+            <button class="btn-primary hidden" id="detailAddFolderBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+              <span>Já baixei — adicionar pasta</span>
+            </button>
             <button class="btn-ghost" id="detailIdentifyBtn">Identificar no TMDB</button>
             <button class="btn-ghost" id="detailOpenFolderBtn">Abrir pasta</button>
+            <button class="btn-ghost hidden" id="detailImdbBtn">Abrir no IMDb</button>
           </div>
         </header>
         <div id="seasonTabs" class="season-tabs"></div>
