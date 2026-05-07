@@ -76,6 +76,27 @@ function groupKeyFromName(name) {
   return title.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+// True when a parsed/cleaned title is meaningless on its own (e.g. just a
+// resolution, codec, source or release group tag). In those cases callers
+// should fall back to a parent folder name.
+const TRIVIAL_TITLE_RE = /^(?:\d{3,4}p|4k|uhd|hdr|dv|hevc|x26[45]|h\.?26[45]|web[\s-]?dl|webrip|bluray|brrip|bdrip|hdtv|dvdrip|amzn|nf|netflix|dsnp|dual|dublado|legendado|multi|repack|proper|atmos|truehd|aac|ac3|dts|ddp?[57]\.?[01])$/i;
+
+function isTrivialTitle(s) {
+  if (!s) return true;
+  const t = String(s).trim();
+  if (!t) return true;
+  if (t.length <= 2) return true;
+  // Only digits/punctuation
+  if (/^[\d\s\-_.]+$/.test(t)) return true;
+  // Season-only names: "S01", "Season 1", "Temporada 03"
+  if (/^s\d{1,2}$/i.test(t.replace(/\s+/g, ''))) return true;
+  if (/^(season|temporada)\s*\d{1,2}$/i.test(t)) return true;
+  // Single-word that matches a known release tag
+  if (TRIVIAL_TITLE_RE.test(t.replace(/\s+/g, ''))) return true;
+  if (TRIVIAL_TITLE_RE.test(t)) return true;
+  return false;
+}
+
 module.exports = {
   cleanTitle,
   cleanEpisodeTitle,
@@ -84,4 +105,5 @@ module.exports = {
   groupKeyFromName,
   parseFolder,
   parseFile,
+  isTrivialTitle,
 };

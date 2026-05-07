@@ -10,6 +10,7 @@ const {
   detectSeasonNumber,
   detectSeasonAndEpisode,
   groupKeyFromName,
+  isTrivialTitle,
 } = require('./titleParser');
 
 // ---------- Storage ----------
@@ -80,6 +81,25 @@ function naturalSort(a, b) {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
 }
 
+// Pick the best name to use as the show title given a folder. If the folder
+// name itself is trivial (e.g. "1080p"), walk up the path until a meaningful
+// ancestor is found, or fall back to the watched folder root name.
+function pickMeaningfulName(folder, watchedRoot) {
+  let cur = folder;
+  for (let i = 0; i < 6; i++) {
+    const name = path.basename(cur);
+    if (!isTrivialTitle(cleanTitle(name))) return name;
+    if (cur === watchedRoot) break;
+    const parent = path.dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  // Last resort: the watched root or the original folder name
+  const rootName = path.basename(watchedRoot);
+  if (!isTrivialTitle(cleanTitle(rootName))) return rootName;
+  return path.basename(folder);
+}
+
 function scanLibrary() {
   // Prune monitored folders that no longer exist on disk
   const before = config.folders.length;
@@ -121,7 +141,8 @@ function scanLibrary() {
         }
 
         // Multi-video folder OR season-named folder => part of a series
-        const key = groupKeyFromName(e.name) || e.name.toLowerCase();
+        const showName = pickMeaningfulName(full, folder);
+        const key = groupKeyFromName(showName) || showName.toLowerCase();
         const seasonNum = detectSeasonNumber(e.name);
 
         // Determine episode list for THIS folder, possibly split by per-file season info
@@ -145,8 +166,8 @@ function scanLibrary() {
           series = {
             id: 'series:' + key,
             type: 'series',
-            title: cleanTitle(e.name) || e.name,
-            rawTitle: e.name,
+            title: cleanTitle(showName) || showName,
+            rawTitle: showName,
             banner,
             folder: full,
             folders: [],
@@ -239,11 +260,10 @@ function scanLibrary() {
       });
 
     // Use the earliest folder name as canonical base for title (already cleaned)
-    // Try harder: the cleanest title from the group of folder names
-    const candidateTitles = s.folders.map((f) => cleanTitle(path.basename(f).replace(/[._\s-]*(season|temporada)[._\s-]*\d+.*$/i, '')));
-    const best = candidateTitles
-      .filter(Boolean)
-      .sort((a, b) => a.length - b.length)[0];
+    // Try harder: the cleanest title from the group of folder names, ignoring trivial ones
+    const candidateTitles = s.folders.map((f) => cleanTitle(path.basename(f).replace(/[._\s-]*(season|temporada)[._\s-]*\d+.*$/i, '')))
+      .filter((t) => t && !isTrivialTitle(t));
+    const best = candidateTitles.sort((a, b) => a.length - b.length)[0];
     if (best) s.title = best;
 
     // Apply meta cache override if present
