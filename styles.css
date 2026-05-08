@@ -887,6 +887,11 @@ main {
 
 .player-next-card { position:absolute; bottom:120px; right:32px; width:380px; background:rgba(15,15,18,.96); border:1px solid var(--line-strong); border-radius:14px; overflow:hidden; backdrop-filter:blur(12px); box-shadow:0 30px 60px -20px rgba(0,0,0,.8); animation:slideUp .3s ease-out; }
 .player-next-card.hidden { display:none; }
+
+.player-skip-btn { position:absolute; bottom:120px; right:32px; padding:12px 22px; background:rgba(15,15,18,.94); color:#fff; border:1px solid var(--line-strong); border-radius:10px; font-size:14px; font-weight:600; cursor:pointer; backdrop-filter:blur(8px); animation:slideUp .25s ease-out; display:flex; align-items:center; gap:8px; box-shadow:0 12px 32px -8px rgba(0,0,0,.7); transition:background .15s, transform .12s; }
+.player-skip-btn:hover { background:var(--accent); transform:translateY(-1px); }
+.player-skip-btn.hidden { display:none; }
+.player-skip-btn #playerSkipCountdown { font-family:'JetBrains Mono',monospace; font-size:12px; opacity:.7; }
 @keyframes slideUp { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
 .player-next-bg { position:absolute; inset:0; background-size:cover; background-position:center; opacity:.25; }
 .player-next-inner { position:relative; padding:18px; }

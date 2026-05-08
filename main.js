@@ -40,7 +40,7 @@ let config = readJson(configPath, { folders: [], vlcPath: '', vlcPort: 9090, vlc
 if (config.embeddedPlayer === undefined) config.embeddedPlayer = true;
 if (config.autoNext === undefined) config.autoNext = true;
 if (config.autoNextSeconds === undefined) config.autoNextSeconds = 8;
-if (config.autoRescan === undefined) config.autoRescan = false;
+if (config.autoRescan === undefined) config.autoRescan = true;
 if (config.skipIntro === undefined) config.skipIntro = false;
 let progress = readJson(progressPath, {}); // { [filePath]: { time, length, updatedAt } }
 let metaCache = readJson(path.join(userDir, 'meta-cache.json'), {}); // { [groupKey]: { title, banner, poster, overview, year, fetchedAt } }
@@ -122,7 +122,6 @@ function scanLibrary() {
     try { return fs.statSync(f).isDirectory(); } catch { return false; }
   });
   if (config.folders.length !== before) saveConfig();
-
   // First, gather raw entries: each top-level child of every monitored folder
   // becomes either a season-folder (groupable into a series) or a movie file.
   const seriesByKey = new Map(); // groupKey -> aggregated series object
@@ -450,6 +449,59 @@ function stopPolling() {
   if (vlcPollTimer) { clearInterval(vlcPollTimer); vlcPollTimer = null; }
 }
 
+// ---------- Watchers (auto-rescan) ----------
+// Vigia as pastas monitoradas e dispara um rescan + push pra UI sempre que
+// um arquivo de video novo eh detectado (ex: torrent acabou de baixar).
+const folderWatchers = new Map(); // folder -> fs.FSWatcher
+let rescanDebounceTimer = null;
+
+function pushLibraryToRenderer(library) {
+  for (const w of BrowserWindow.getAllWindows()) {
+    try { w.webContents.send('library:updated', { library }); } catch {}
+  }
+}
+
+function scheduleRescan() {
+  if (rescanDebounceTimer) clearTimeout(rescanDebounceTimer);
+  // Debounce: torrent finalizando frequentemente cria varios arquivos
+  // (vídeo + .nfo + sample + .srt). Esperamos 4s sem mudanças antes de
+  // refazer o scan, pra evitar trabalho redundante.
+  rescanDebounceTimer = setTimeout(() => {
+    rescanDebounceTimer = null;
+    try {
+      const lib = scanLibrary();
+      pushLibraryToRenderer(lib);
+      console.log('[watcher] auto-rescan disparado, %d itens', lib.length);
+    } catch (e) { console.error('[watcher] rescan fail', e); }
+  }, 4000);
+}
+
+function startFolderWatchers() {
+  stopFolderWatchers();
+  if (!config.autoRescan) return;
+  for (const folder of config.folders) {
+    try {
+      const w = fs.watch(folder, { recursive: true }, (_event, filename) => {
+        if (!filename) return;
+        const ext = path.extname(filename).toLowerCase();
+        if (!VIDEO_EXT.has(ext)) return;
+        scheduleRescan();
+      });
+      w.on('error', (e) => console.warn('[watcher] erro em', folder, e.message));
+      folderWatchers.set(folder, w);
+    } catch (e) {
+      console.warn('[watcher] nao consegui vigiar', folder, e.message);
+    }
+  }
+  console.log('[watcher] vigiando %d pasta(s)', folderWatchers.size);
+}
+
+function stopFolderWatchers() {
+  for (const w of folderWatchers.values()) { try { w.close(); } catch {} }
+  folderWatchers.clear();
+  if (rescanDebounceTimer) { clearTimeout(rescanDebounceTimer); rescanDebounceTimer = null; }
+}
+
 async function playFile(filePath) {
   if (config.embeddedPlayer) {
     // Garante que o transmux server esta rodando, depois aponta o <video>
@@ -534,12 +586,14 @@ ipcMain.handle('library:addFolder', async () => {
     config.folders.push(folder);
     saveConfig();
   }
+  startFolderWatchers();
   return { ok: true, folder, library: scanLibrary() };
 });
 
 ipcMain.handle('library:removeFolder', (_e, folder) => {
   config.folders = config.folders.filter((f) => f !== folder);
   saveConfig();
+  startFolderWatchers();
   return { ok: true, library: scanLibrary() };
 });
 
@@ -1114,6 +1168,7 @@ function probeFile(filePath) {
       '-print_format', 'json',
       '-show_format',
       '-show_streams',
+      '-show_chapters',
       filePath,
     ], { stdio: ['ignore', 'pipe', 'ignore'] });
     let buf = '';
@@ -1138,7 +1193,12 @@ function probeFile(filePath) {
             title: (s.tags && (s.tags.title || s.tags.TITLE)) || '',
             codec: s.codec_name,
           }));
-        const out = { audio, subs, duration };
+        const chapters = (j.chapters || []).map((c) => ({
+          start: parseFloat(c.start_time) || 0,
+          end: parseFloat(c.end_time) || 0,
+          title: (c.tags && (c.tags.title || c.tags.TITLE)) || '',
+        }));
+        const out = { audio, subs, duration, chapters };
         tracksCache.set(filePath, out);
         durationCache.set(filePath, duration);
         resolve(out);
@@ -1161,7 +1221,7 @@ function pickPreferredAudio(audioTracks) {
 ipcMain.handle('player:probe', async (_e, filePath) => {
   const info = await probeFile(filePath);
   const preferred = pickPreferredAudio(info.audio);
-  return { duration: info.duration, audio: info.audio, preferred, subs: info.subs || [] };
+  return { duration: info.duration, audio: info.audio, preferred, subs: info.subs || [], chapters: info.chapters || [] };
 });
 
 // Extrai uma legenda embutida (por absolute index do stream subtitle) e devolve em VTT
@@ -1405,6 +1465,7 @@ ipcMain.handle('config:setToggle', (_e, key, value) => {
   if (!allowed.includes(key)) return { ok: false };
   config[key] = !!value;
   saveConfig();
+  if (key === 'autoRescan') startFolderWatchers();
   return { ok: true, key, value: config[key] };
 });
 
@@ -1507,6 +1568,19 @@ function createWindow() {
       win.webContents.toggleDevTools();
     }
   });
+  // Sempre que a janela ganha foco, dispara um rescan leve em background.
+  // Funciona mesmo sem autoRescan ligado: usuario sai pra baixar torrent,
+  // volta no app e a biblioteca ja atualiza sozinha.
+  let lastFocusRescan = 0;
+  win.on('focus', () => {
+    const now = Date.now();
+    if (now - lastFocusRescan < 5000) return;
+    lastFocusRescan = now;
+    try {
+      const lib = scanLibrary();
+      win.webContents.send('library:updated', { library: lib });
+    } catch {}
+  });
 }
 
 app.whenReady().then(() => {
@@ -1523,9 +1597,11 @@ app.whenReady().then(() => {
     console.error('protocol register fail', e);
   }
   createWindow();
+  startFolderWatchers();
 });
 app.on('window-all-closed', () => {
   stopPolling();
+  stopFolderWatchers();
   killAllTransmux();
   if (vlcProcess) { try { vlcProcess.kill(); } catch {} }
   if (process.platform !== 'darwin') app.quit();

@@ -633,10 +633,14 @@ function ensurePlayerInit() {
     player.el.classList.remove('hide-chrome');
     clearTimeout(player.hideTimer);
     player.hideTimer = setTimeout(() => {
-      if (!v.paused) player.el.classList.add('hide-chrome');
+      const vv = player.video;
+      if (vv && !vv.paused) player.el.classList.add('hide-chrome');
     }, 2500);
   };
   player.el.addEventListener('mousemove', showChrome);
+  // Tambem oculta automaticamente quando o video comeca a tocar (caso o usuario
+  // nao mexa o mouse). Reanexado para o video clonado em bindVideoListeners.
+  player.onPlayHide = showChrome;
 
   playBtn.onclick = () => { const vv = player.video; vv.paused ? vv.play() : vv.pause(); };
   bindVideoListeners(v);
@@ -720,8 +724,15 @@ function bindVideoListeners(v) {
   const pauseIcon = document.getElementById('playerPauseIcon');
   const timeEl = document.getElementById('playerTime');
   const fill = document.getElementById('playerProgressFill');
-  v.addEventListener('play', () => { playIcon.hidden = true; pauseIcon.hidden = false; });
-  v.addEventListener('pause', () => { playIcon.hidden = false; pauseIcon.hidden = true; });
+  v.addEventListener('play', () => {
+    playIcon.hidden = true; pauseIcon.hidden = false;
+    if (player.onPlayHide) player.onPlayHide();
+  });
+  v.addEventListener('pause', () => {
+    playIcon.hidden = false; pauseIcon.hidden = true;
+    player.el && player.el.classList.remove('hide-chrome');
+    clearTimeout(player.hideTimer);
+  });
   v.addEventListener('click', () => v.paused ? v.play() : v.pause());
   v.addEventListener('timeupdate', () => {
     const total = (player.current && player.current.duration) || v.duration || 0;
@@ -738,6 +749,28 @@ function bindVideoListeners(v) {
       lastSave = now;
       window.api.saveProgress(player.current.filePath, cur, total);
     }
+    // Auto-next baseado em duracao real (ffprobe). O evento 'ended' eh
+    // pouco confiavel no streaming chunked porque o ffmpeg fecha o pipe
+    // mas o <video> nem sempre dispara ended. Disparamos quando faltam
+    // <=60s OU quando entra no ultimo capitulo curto (creditos).
+    if (player.current && total > 30 && !player.current._endedFired) {
+      const remain = total - cur;
+      let trigger = false;
+      if (remain <= 60) trigger = true;
+      // Se chegou no ultimo capitulo e ele eh curto (<= 2min), entra em
+      // modo "proximo episodio" mesmo que ainda faltem mais segundos.
+      const chaps = player.current.chapters;
+      if (chaps && chaps.length > 1) {
+        const last = chaps[chaps.length - 1];
+        if (cur >= last.start && (last.end - last.start) <= 120) trigger = true;
+      }
+      if (trigger) {
+        player.current._endedFired = true;
+        onPlaybackEnded();
+      }
+    }
+    // Skip intro/recap por capitulo
+    detectSkippableChapter(cur);
   });
   v.addEventListener('ended', () => onPlaybackEnded());
   v.addEventListener('error', () => {
@@ -865,8 +898,10 @@ async function openEmbeddedPlayer({ url, filePath, item, episode, autoNext, auto
   resetVideoElement();
   // Probe pra duracao real + lista de faixas de audio + idioma preferido
   const probe = await window.api.probe(filePath).catch(() => ({ duration: 0, audio: [], preferred: 0 }));
-  player.current = { filePath, item, episode, autoNext, autoNextSeconds, baseUrl: url, audioIdx: probe.preferred || 0, audioTracks: probe.audio || [], duration: probe.duration || 0, virtualOffset: 0, activeSubIdx: -1 };
+  player.current = { filePath, item, episode, autoNext, autoNextSeconds, baseUrl: url, audioIdx: probe.preferred || 0, audioTracks: probe.audio || [], duration: probe.duration || 0, virtualOffset: 0, activeSubIdx: -1, chapters: probe.chapters || [], skipDismissed: {} };
+  console.log('[player] chapters:', probe.chapters);
   cancelAutoNext();
+  cancelSkip();
   player.el.classList.remove('hidden', 'hide-chrome');
 
   // Title
@@ -959,13 +994,16 @@ function buildAudioMenu(tracks, currentIdx) {
 
 function closeEmbeddedPlayer() {
   cancelAutoNext();
+  hideSkipBtn();
   if (!player.el) return;
   const v = player.video;
+  const closingItem = player.current ? player.current.item : null;
+  let savePromise = null;
   if (player.current) {
     const total = player.current.duration || v.duration || 0;
     const cur = (player.current.virtualOffset || 0) + (v.currentTime || 0);
     if (total && cur > 0) {
-      window.api.saveProgress(player.current.filePath, cur, total);
+      savePromise = window.api.saveProgress(player.current.filePath, cur, total);
     }
     window.api.logClose(player.current.filePath);
   }
@@ -975,12 +1013,19 @@ function closeEmbeddedPlayer() {
   player.el.classList.add('hidden');
   player.current = null;
   if (document.fullscreenElement) document.exitFullscreen().catch(()=>{});
-  // Refresh continue row
+  // Refresh listas: aguarda o saveProgress terminar antes de reler do disco,
+  // senao o estado em memoria fica defasado e a barra de "continuar" some.
   (async () => {
+    if (savePromise) { try { await savePromise; } catch {} }
     state.progress = await window.api.getProgress();
     state.history = await window.api.getHistory();
     await renderRows();
     await renderHero();
+    // Se a tela de detalhe estiver aberta no mesmo titulo, re-renderiza
+    // pra atualizar a barrinha por episodio.
+    if (closingItem && state.currentDetail && state.currentDetail.path === closingItem.path) {
+      openDetail(state.currentDetail);
+    }
   })();
 }
 
@@ -1039,6 +1084,96 @@ function cancelAutoNext() {
   if (player.nextTimer) { clearInterval(player.nextTimer); player.nextTimer = null; }
   const card = document.getElementById('playerNextCard');
   if (card) card.classList.add('hidden');
+}
+
+// ---------- Skip intro/recap (por capitulos do MKV) ----------
+const SKIP_PATTERNS = [
+  { re: /\b(intro|opening|abertura|op|openning|theme)\b/i, label: 'Pular abertura' },
+  { re: /\b(recap|previously|anteriormente|resumo|antes)\b/i, label: 'Pular resumo' },
+  { re: /\b(credits|cr[ée]ditos|ending|encerramento|outro)\b/i, label: 'Pular cr\u00e9ditos' },
+];
+
+// Decide se o capitulo merece botao de pular. Aceita por nome OU por
+// heuristica (primeiros capitulos curtos no inicio do episodio sao
+// tipicamente recap/abertura, mesmo quando o titulo eh apenas um timestamp).
+function chapterSkipLabel(chap, allChaps, totalDuration) {
+  // Match explicito por nome
+  for (const p of SKIP_PATTERNS) if (chap.title && p.re.test(chap.title)) return p.label;
+  if (!allChaps || allChaps.length < 3) return null;
+  const dur = chap.end - chap.start;
+  // Capitulo no comeco (primeiros 6 min) e curto (<= 4 min): recap/abertura
+  if (chap.start < 360 && dur > 0 && dur <= 240) return 'Pular abertura';
+  // Capitulo no final (ultimos 8% do filme) e curto (<=2min): creditos
+  if (totalDuration && chap.start > totalDuration * 0.92 && dur <= 120) return 'Pular cr\u00e9ditos';
+  return null;
+}
+
+function detectSkippableChapter(absSec) {
+  const cur = player.current;
+  if (!cur || !cur.chapters || !cur.chapters.length) return;
+  const chap = cur.chapters.find((c) => absSec >= c.start && absSec < c.end);
+  if (!chap) { hideSkipBtn(); return; }
+  const label = chapterSkipLabel(chap, cur.chapters, cur.duration);
+  if (!label) { hideSkipBtn(); return; }
+  // Se usuario ja dispensou (cancelou) esse capitulo, nao mostra de novo
+  if (cur.skipDismissed[chap.start] === 'dismissed') { hideSkipBtn(); return; }
+  // Mostra o botao durante TODA a duracao do capitulo (usuario pode clicar
+  // a qualquer momento). O countdown so eh disparado uma vez (na primeira
+  // entrada). Se ja expirou/dispensou, esconde.
+  showSkipBtn(label, chap);
+}
+
+function showSkipBtn(label, chap) {
+  const btn = document.getElementById('playerSkipBtn');
+  if (!btn) return;
+  // Ja visivel pra esse capitulo? nao reseta countdown
+  if (btn.dataset.chapStart === String(chap.start) && !btn.classList.contains('hidden')) return;
+  btn.dataset.chapStart = String(chap.start);
+  btn.classList.remove('hidden');
+  document.getElementById('playerSkipLabel').textContent = label;
+  // Countdown so dispara na primeira entrada do capitulo
+  const cur = player.current;
+  const cdEl = document.getElementById('playerSkipCountdown');
+  if (cur && !cur.skipDismissed[chap.start]) {
+    let n = 8;
+    cdEl.textContent = `(${n}s)`;
+    if (player.skipTimer) clearInterval(player.skipTimer);
+    player.skipTimer = setInterval(() => {
+      n -= 1;
+      cdEl.textContent = `(${n}s)`;
+      if (n <= 0) {
+        if (player.skipTimer) { clearInterval(player.skipTimer); player.skipTimer = null; }
+        cdEl.textContent = '';
+        doSkip(chap);
+      }
+    }, 1000);
+    cur.skipDismissed[chap.start] = 'started';
+  } else {
+    cdEl.textContent = '';
+  }
+  btn.onclick = () => doSkip(chap);
+}
+
+function doSkip(chap) {
+  cancelSkip();
+  const cur = player.current;
+  if (!cur) return;
+  cur.skipDismissed[chap.start] = 'dismissed';
+  // Pula pro fim do capitulo (com seek server-side)
+  loadStream(chap.end);
+}
+
+function hideSkipBtn() {
+  const btn = document.getElementById('playerSkipBtn');
+  if (btn && !btn.classList.contains('hidden')) {
+    btn.classList.add('hidden');
+    btn.dataset.chapStart = '';
+  }
+  if (player.skipTimer) { clearInterval(player.skipTimer); player.skipTimer = null; }
+}
+
+function cancelSkip() {
+  hideSkipBtn();
 }
 
 // ---------- Settings ----------
@@ -1154,6 +1289,20 @@ async function init() {
   document.addEventListener('scroll', () => {
     $('.topbar').classList.toggle('scrolled', window.scrollY > 8);
   }, { passive: true });
+
+  // Auto-update da biblioteca: o main vigia as pastas (autoRescan) e tambem
+  // dispara um rescan quando a janela ganha foco. Aqui so aplicamos.
+  if (window.api.onLibraryUpdated) {
+    window.api.onLibraryUpdated(async ({ library }) => {
+      const before = state.library ? state.library.length : 0;
+      state.library = library || [];
+      // So mostra toast se realmente apareceu coisa nova
+      if (library && library.length > before) {
+        showToast(`Biblioteca atualizada: ${library.length - before} novo(s) item(ns)`, 3500);
+      }
+      await renderAll();
+    });
+  }
 
   // Nav
   $$('.nav-link').forEach((b) => b.addEventListener('click', () => route(b.dataset.route)));

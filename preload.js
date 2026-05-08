@@ -36,4 +36,5 @@ contextBridge.exposeInMainWorld('api', {
   checkUpdate: () => ipcRenderer.invoke('app:checkUpdate'),
   probe: (p) => ipcRenderer.invoke('player:probe', p),
   extractSub: (p, idx) => ipcRenderer.invoke('player:extractSub', p, idx),
+  onLibraryUpdated: (cb) => ipcRenderer.on('library:updated', (_e, data) => cb(data)),
 });
