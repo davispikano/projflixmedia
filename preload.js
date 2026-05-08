@@ -13,7 +13,7 @@ contextBridge.exposeInMainWorld('api', {
   onImdbProgress: (cb) => ipcRenderer.on('imdb:progress', (_e, data) => cb(data)),
   clearMeta: () => ipcRenderer.invoke('meta:clear'),
   searchMeta: (query, type) => ipcRenderer.invoke('meta:search', query, type),
-  applyMeta: (itemTitle, itemType, tmdbId, mediaType) => ipcRenderer.invoke('meta:apply', itemTitle, itemType, tmdbId, mediaType),
+  applyMeta: (itemTitle, itemType, tmdbId, mediaType, rawTitle, folder) => ipcRenderer.invoke('meta:apply', itemTitle, itemType, tmdbId, mediaType, rawTitle, folder),
   resetCache: () => ipcRenderer.invoke('library:resetCache'),
   onMetaProgress: (cb) => ipcRenderer.on('meta:progress', (_e, data) => cb(data)),
   getProgress: () => ipcRenderer.invoke('progress:get'),

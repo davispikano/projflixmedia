@@ -833,13 +833,47 @@ ipcMain.handle('meta:search', async (_e, query, type) => {
 });
 
 // Apply a chosen TMDB result to a specific library item
-ipcMain.handle('meta:apply', async (_e, itemTitle, itemType, tmdbId, mediaType) => {
+ipcMain.handle('meta:apply', async (_e, itemTitle, itemType, tmdbId, mediaType, rawTitle, folder) => {
   if (!config.tmdbKey) return { ok: false, error: 'Sem chave TMDB configurada.' };
   const kind = mediaType === 'tv' || itemType === 'series' ? 'tv' : 'movie';
   try {
     const result = await buildMetaFromTmdbId(tmdbId, kind);
-    const key = groupKeyFromName(itemTitle) || itemTitle.toLowerCase();
-    metaCache[key] = result;
+
+    // Purge ALL stale cache keys that could still apply to this item:
+    //  - the displayed title (which may itself be a previous TMDB override)
+    //  - the raw folder title
+    //  - the new TMDB-returned title
+    //  - any key whose meta currently points to a DIFFERENT tmdbId but matches
+    //    one of the titles above (this catches the case where the wrong show
+    //    was auto-identified earlier).
+    const candidateTitles = [itemTitle, rawTitle, result.title].filter(Boolean);
+    const keysToReplace = new Set();
+    for (const t of candidateTitles) {
+      const k = groupKeyFromName(t);
+      if (k) keysToReplace.add(k);
+    }
+    for (const k of Array.from(keysToReplace)) {
+      delete metaCache[k];
+    }
+    // Also drop any other entry that was written under a key that loosely
+    // matches one of our titles (handles accents/punctuation drift).
+    for (const k of Object.keys(metaCache)) {
+      const e = metaCache[k];
+      if (!e) continue;
+      if (e.tmdbId && e.tmdbId !== tmdbId) {
+        for (const t of candidateTitles) {
+          if (groupKeyFromName(e.title || '') === groupKeyFromName(t)) {
+            delete metaCache[k];
+            break;
+          }
+        }
+      }
+    }
+
+    // Write the fresh meta under EVERY plausible key so the next scanLibrary()
+    // call hits it no matter how the title is normalized.
+    for (const k of keysToReplace) metaCache[k] = result;
+
     saveMetaCache();
     return { ok: true, library: scanLibrary() };
   } catch (e) {

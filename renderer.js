@@ -507,7 +507,7 @@ async function runSearch() {
       const item = state.searchingFor;
       if (!item) return;
       showToast('Aplicando metadados…');
-      const apply = await window.api.applyMeta(item.title, item.type, r.id, r.mediaType);
+      const apply = await window.api.applyMeta(item.title, item.type, r.id, r.mediaType, item.rawTitle, item.folder);
       if (!apply.ok) { showToast(apply.error || 'Falhou'); return; }
       state.library = apply.library;
       state.imageCache.clear();
