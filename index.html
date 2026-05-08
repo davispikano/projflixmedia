@@ -133,6 +133,45 @@
           <button class="btn-primary" id="fetchImdbBtn">Buscar notas IMDb</button>
         </div>
         <div class="meta-log muted" id="metaLog"></div>
+
+        <div class="settings-head" style="margin-top:40px">
+          <h2>Reprodução</h2>
+          <p class="muted">Escolha entre o player embutido (legendas .srt/.ass do lado do vídeo, próximo episódio automático) ou o VLC externo.</p>
+        </div>
+        <div class="settings-row">
+          <label class="radio-pill">
+            <input type="radio" name="playerKind" value="embedded" id="playerEmbeddedRadio" />
+            <span>Player embutido</span>
+          </label>
+          <label class="radio-pill">
+            <input type="radio" name="playerKind" value="vlc" id="playerVlcRadio" />
+            <span>VLC externo</span>
+          </label>
+        </div>
+        <div class="settings-row toggle-row">
+          <label class="switch">
+            <input type="checkbox" id="autoNextToggle" />
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+            <span class="switch-label">Próximo episódio automático</span>
+          </label>
+          <span class="muted">em</span>
+          <input type="number" id="autoNextSecondsInput" min="3" max="30" class="text-input" style="width:70px" />
+          <span class="muted">segundos</span>
+        </div>
+        <div class="settings-row toggle-row">
+          <label class="switch">
+            <input type="checkbox" id="autoRescanToggle" />
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+            <span class="switch-label">Re-escanear pastas automaticamente quando aparecer arquivo novo <em class="muted">(em breve)</em></span>
+          </label>
+        </div>
+        <div class="settings-row toggle-row">
+          <label class="switch">
+            <input type="checkbox" id="skipIntroToggle" />
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+            <span class="switch-label">Mostrar botão "Pular intro" <em class="muted">(em breve)</em></span>
+          </label>
+        </div>
       </section>
     </main>
 
@@ -179,6 +218,74 @@
     </div>
 
     <div id="toast" class="toast hidden"></div>
+
+    <!-- Embedded video player -->
+    <div id="player" class="player hidden">
+      <video id="playerVideo" class="player-video" preload="metadata" crossorigin="anonymous"></video>
+      <div class="player-top">
+        <button class="player-close" id="playerClose" aria-label="Fechar">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+        <div class="player-titles">
+          <div class="player-title" id="playerTitle"></div>
+          <div class="player-subtitle" id="playerSubtitle"></div>
+        </div>
+      </div>
+      <div class="player-bottom">
+        <div class="player-progress" id="playerProgress">
+          <div class="player-progress-bar"><div class="player-progress-fill" id="playerProgressFill"></div></div>
+        </div>
+        <div class="player-controls">
+          <button class="player-btn" id="playerPlayBtn" aria-label="Play/Pause">
+            <svg id="playerPlayIcon" width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg>
+            <svg id="playerPauseIcon" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" hidden><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>
+          </button>
+          <button class="player-btn" id="playerBack10" aria-label="-10s" title="-10s">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M11 5L4 12l7 7M4 12h12a4 4 0 010 8h-1"/></svg>
+            <span class="player-btn-label">10</span>
+          </button>
+          <button class="player-btn" id="playerFwd10" aria-label="+10s" title="+10s">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M13 5l7 7-7 7M20 12H8a4 4 0 000 8h1"/></svg>
+            <span class="player-btn-label">10</span>
+          </button>
+          <span class="player-time" id="playerTime">0:00 / 0:00</span>
+          <div class="player-spacer"></div>
+          <div class="player-vol">
+            <button class="player-btn" id="playerMuteBtn" aria-label="Mudo">
+              <svg id="playerVolIcon" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9zm13.5 3a4.5 4.5 0 00-2.5-4v8a4.5 4.5 0 002.5-4z"/></svg>
+            </button>
+            <input type="range" id="playerVol" min="0" max="1" step="0.05" value="1" />
+          </div>
+          <div class="player-subs-wrap">
+            <button class="player-btn" id="playerSubsBtn" aria-label="Legendas" title="Legendas (C)">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 14h3M13 14h4M7 11h2M11 11h6"/></svg>
+            </button>
+            <div class="player-subs-menu hidden" id="playerSubsMenu"></div>
+          </div>
+          <button class="player-btn" id="playerFsBtn" aria-label="Tela cheia" title="Tela cheia (F)">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="player-next-card hidden" id="playerNextCard">
+        <div class="player-next-bg" id="playerNextBg"></div>
+        <div class="player-next-inner">
+          <div class="player-next-kicker">PRÓXIMO EPISÓDIO</div>
+          <div class="player-next-title" id="playerNextTitle"></div>
+          <div class="player-next-overview" id="playerNextOverview"></div>
+          <div class="player-next-actions">
+            <button class="btn-primary" id="playerNextPlayBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg>
+              <span>Reproduzir agora <span id="playerNextCountdown">(8s)</span></span>
+            </button>
+            <button class="btn-ghost" id="playerNextCancelBtn">Cancelar</button>
+          </div>
+        </div>
+      </div>
+      <div class="player-loading hidden" id="playerLoading">
+        <div class="spinner"></div>
+      </div>
+    </div>
 
     <!-- Manual TMDB search modal -->
     <div id="searchModal" class="modal hidden">

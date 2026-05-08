@@ -1,9 +1,15 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, protocol, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const http = require('http');
 const https = require('https');
+
+// Registra o scheme custom pra reproduzir vídeos locais de qualquer pasta
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'mediaflix-file', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, bypassCSP: true } },
+]);
+
 const {
   cleanTitle,
   cleanEpisodeTitle,
@@ -30,6 +36,12 @@ function writeJson(p, data) {
 }
 
 let config = readJson(configPath, { folders: [], vlcPath: '', vlcPort: 9090, vlcPassword: 'mediaflix', tmdbKey: '', tmdbLang: 'pt-BR' });
+// Migração — defaults novos pra instalações antigas
+if (config.embeddedPlayer === undefined) config.embeddedPlayer = true;
+if (config.autoNext === undefined) config.autoNext = true;
+if (config.autoNextSeconds === undefined) config.autoNextSeconds = 8;
+if (config.autoRescan === undefined) config.autoRescan = false;
+if (config.skipIntro === undefined) config.skipIntro = false;
 let progress = readJson(progressPath, {}); // { [filePath]: { time, length, updatedAt } }
 let metaCache = readJson(path.join(userDir, 'meta-cache.json'), {}); // { [groupKey]: { title, banner, poster, overview, year, fetchedAt } }
 const historyPath = path.join(userDir, 'history.json');
@@ -439,9 +451,15 @@ function stopPolling() {
 }
 
 async function playFile(filePath) {
+  // Se player embutido está ativo, devolvemos a URL custom pro renderer reproduzir
+  // sem nem invocar VLC.
+  if (config.embeddedPlayer) {
+    return { ok: true, embedded: true, url: 'mediaflix-file:///' + filePath.replace(/\\/g, '/') };
+  }
+
   const vlc = findVlcPath();
   if (!vlc) {
-    return { ok: false, error: 'VLC não encontrado. Instale o VLC ou configure o caminho manualmente.' };
+    return { ok: false, error: 'VLC não encontrado. Instale o VLC ou ative o player embutido nas Configurações.' };
   }
 
   const saved = progress[filePath];
@@ -1056,6 +1074,132 @@ ipcMain.handle('library:resetCache', () => {
   return { ok: true, library: scanLibrary(), prunedProgress: pruned };
 });
 
+// ---------- Embedded player support ----------
+const SUBTITLE_EXT = new Set(['.srt', '.vtt', '.ass', '.ssa']);
+
+function detectSubLang(name) {
+  // common patterns: video.pt-BR.srt / video.en.srt / video.por.srt
+  const m = name.match(/\.([a-z]{2,3}(?:-[a-z]{2})?)\.[a-z]+$/i);
+  if (m) return m[1].toLowerCase();
+  if (/portug|\bpt\b|\bbr\b|\bpor\b/i.test(name)) return 'pt';
+  if (/english|\beng\b|\ben\b/i.test(name)) return 'en';
+  if (/spanish|\bspa\b|\bes\b/i.test(name)) return 'es';
+  return '';
+}
+
+function langLabel(code) {
+  const map = { 'pt': 'Português', 'pt-br': 'Português (BR)', 'por': 'Português',
+                'en': 'English', 'eng': 'English', 'es': 'Español', 'spa': 'Español',
+                'fr': 'Français', 'de': 'Deutsch', 'it': 'Italiano', 'ja': '日本語' };
+  return map[code] || code.toUpperCase() || 'Legenda';
+}
+
+ipcMain.handle('player:sidecars', (_e, filePath) => {
+  try {
+    const dir = path.dirname(filePath);
+    const base = path.basename(filePath, path.extname(filePath)).toLowerCase();
+    const entries = fs.readdirSync(dir);
+    const subs = [];
+    for (const name of entries) {
+      const ext = path.extname(name).toLowerCase();
+      if (!SUBTITLE_EXT.has(ext)) continue;
+      const lower = name.toLowerCase();
+      const noExt = path.basename(lower, ext);
+      // Match: same basename, or basename.lang
+      if (noExt === base || noExt.startsWith(base + '.') || noExt.startsWith(base + '_')) {
+        try {
+          const full = path.join(dir, name);
+          let raw = fs.readFileSync(full);
+          // Try utf8, fall back to latin1
+          let content = raw.toString('utf8');
+          if (content.includes('\uFFFD')) content = raw.toString('latin1');
+          subs.push({
+            file: full,
+            name,
+            ext: ext.slice(1),
+            lang: detectSubLang(name),
+            label: langLabel(detectSubLang(name)),
+            content,
+          });
+        } catch {}
+      }
+    }
+    // Also any subtitle in dir if none matched (single video folder)
+    if (subs.length === 0) {
+      for (const name of entries) {
+        const ext = path.extname(name).toLowerCase();
+        if (!SUBTITLE_EXT.has(ext)) continue;
+        try {
+          const full = path.join(dir, name);
+          let raw = fs.readFileSync(full);
+          let content = raw.toString('utf8');
+          if (content.includes('\uFFFD')) content = raw.toString('latin1');
+          subs.push({
+            file: full,
+            name,
+            ext: ext.slice(1),
+            lang: detectSubLang(name),
+            label: langLabel(detectSubLang(name)),
+            content,
+          });
+        } catch {}
+      }
+    }
+    return { ok: true, subs };
+  } catch (e) {
+    return { ok: false, error: String(e), subs: [] };
+  }
+});
+
+ipcMain.handle('progress:save', (_e, filePath, time, length) => {
+  if (!filePath || typeof time !== 'number' || typeof length !== 'number' || length <= 0) return { ok: false };
+  progress[filePath] = { time, length, updatedAt: Date.now() };
+  saveProgress();
+  return { ok: true };
+});
+
+ipcMain.handle('history:logOpen', (_e, filePath) => {
+  const entry = history[filePath] || { openCount: 0 };
+  entry.openedAt = Date.now();
+  entry.openCount = (entry.openCount || 0) + 1;
+  entry.closedAt = null;
+  history[filePath] = entry;
+  saveHistory();
+  return { ok: true };
+});
+
+ipcMain.handle('history:logClose', (_e, filePath) => {
+  if (history[filePath]) {
+    history[filePath].closedAt = Date.now();
+    saveHistory();
+  }
+  return { ok: true };
+});
+
+ipcMain.handle('config:setEmbeddedPlayer', (_e, enabled) => {
+  config.embeddedPlayer = !!enabled;
+  saveConfig();
+  return { ok: true, embeddedPlayer: config.embeddedPlayer };
+});
+
+ipcMain.handle('config:setToggle', (_e, key, value) => {
+  const allowed = ['embeddedPlayer', 'autoNext', 'autoRescan', 'skipIntro'];
+  if (!allowed.includes(key)) return { ok: false };
+  config[key] = !!value;
+  saveConfig();
+  return { ok: true, key, value: config[key] };
+});
+
+ipcMain.handle('config:setNumber', (_e, key, value) => {
+  const allowed = { autoNextSeconds: { min: 3, max: 30 } };
+  if (!allowed[key]) return { ok: false };
+  const n = Number(value);
+  if (!Number.isFinite(n)) return { ok: false };
+  config[key] = Math.max(allowed[key].min, Math.min(allowed[key].max, Math.round(n)));
+  saveConfig();
+  return { ok: true, key, value: config[key] };
+});
+
 // Expose local image files to the renderer via file:// — but we need to read them as data URLs because Electron with sandbox blocks file:// from custom origins. Easier: read as base64.
 ipcMain.handle('image:read', (_e, filePath) => {
   try {
@@ -1086,7 +1230,21 @@ function createWindow() {
   win.loadFile('index.html');
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  // Custom protocol pra streamar arquivos de vídeo locais de qualquer pasta
+  // sem precisar baixar tudo pra memória nem expor file://.
+  try {
+    protocol.handle('mediaflix-file', (request) => {
+      const url = decodeURIComponent(request.url.replace(/^mediaflix-file:\/\//, ''));
+      // pode vir como /C:/path ou C:/path
+      const cleaned = url.replace(/^\//, '');
+      return net.fetch('file:///' + cleaned);
+    });
+  } catch (e) {
+    console.error('protocol register fail', e);
+  }
+  createWindow();
+});
 app.on('window-all-closed', () => {
   stopPolling();
   if (vlcProcess) { try { vlcProcess.kill(); } catch {} }
