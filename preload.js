@@ -34,4 +34,6 @@ contextBridge.exposeInMainWorld('api', {
   setNumber: (key, value) => ipcRenderer.invoke('config:setNumber', key, value),
   getVersion: () => ipcRenderer.invoke('app:version'),
   checkUpdate: () => ipcRenderer.invoke('app:checkUpdate'),
+  probe: (p) => ipcRenderer.invoke('player:probe', p),
+  extractSub: (p, idx) => ipcRenderer.invoke('player:extractSub', p, idx),
 });

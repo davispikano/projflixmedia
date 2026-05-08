@@ -1094,6 +1094,98 @@ function getFfmpegPath() {
   // Quando empacotado, o caminho vem dentro do asar — substitui pra unpacked
   return ffmpegStaticPath.replace('app.asar', 'app.asar.unpacked');
 }
+let ffprobeStaticPath = null;
+try { ffprobeStaticPath = require('ffprobe-static').path; } catch {}
+function getFfprobePath() {
+  if (!ffprobeStaticPath) return null;
+  return ffprobeStaticPath.replace('app.asar', 'app.asar.unpacked');
+}
+
+const durationCache = new Map(); // filePath -> seconds
+const tracksCache = new Map(); // filePath -> { audio: [{index, lang, title}], duration }
+
+function probeFile(filePath) {
+  return new Promise((resolve) => {
+    if (tracksCache.has(filePath)) return resolve(tracksCache.get(filePath));
+    const ffprobe = getFfprobePath();
+    if (!ffprobe) return resolve({ audio: [], duration: 0 });
+    const proc = spawn(ffprobe, [
+      '-v', 'error',
+      '-print_format', 'json',
+      '-show_format',
+      '-show_streams',
+      filePath,
+    ], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let buf = '';
+    proc.stdout.on('data', (d) => buf += d.toString());
+    proc.on('exit', () => {
+      try {
+        const j = JSON.parse(buf);
+        const duration = parseFloat((j.format && j.format.duration) || 0) || 0;
+        const audio = (j.streams || [])
+          .filter((s) => s.codec_type === 'audio')
+          .map((s, i) => ({
+            index: i,
+            lang: ((s.tags && (s.tags.language || s.tags.LANGUAGE)) || '').toLowerCase(),
+            title: (s.tags && (s.tags.title || s.tags.TITLE)) || '',
+            codec: s.codec_name,
+          }));
+        const subs = (j.streams || [])
+          .filter((s) => s.codec_type === 'subtitle')
+          .map((s, i) => ({
+            index: i,
+            lang: ((s.tags && (s.tags.language || s.tags.LANGUAGE)) || '').toLowerCase(),
+            title: (s.tags && (s.tags.title || s.tags.TITLE)) || '',
+            codec: s.codec_name,
+          }));
+        const out = { audio, subs, duration };
+        tracksCache.set(filePath, out);
+        durationCache.set(filePath, duration);
+        resolve(out);
+      } catch { resolve({ audio: [], subs: [], duration: 0 }); }
+    });
+    proc.on('error', () => resolve({ audio: [], duration: 0 }));
+  });
+}
+
+function pickPreferredAudio(audioTracks) {
+  if (!audioTracks || !audioTracks.length) return 0;
+  // Prioridade: pt-br > por/pt > primeira
+  const pt = audioTracks.find((a) => /pt.?br|brazil|brasil/i.test(a.lang) || /pt.?br|brazil|brasil/i.test(a.title));
+  if (pt) return pt.index;
+  const por = audioTracks.find((a) => /^(por|pt|ptg)/i.test(a.lang));
+  if (por) return por.index;
+  return 0;
+}
+
+ipcMain.handle('player:probe', async (_e, filePath) => {
+  const info = await probeFile(filePath);
+  const preferred = pickPreferredAudio(info.audio);
+  return { duration: info.duration, audio: info.audio, preferred, subs: info.subs || [] };
+});
+
+// Extrai uma legenda embutida (por absolute index do stream subtitle) e devolve em VTT
+ipcMain.handle('player:extractSub', (_e, filePath, subIdx) => {
+  return new Promise((resolve) => {
+    const ffmpeg = getFfmpegPath();
+    if (!ffmpeg) return resolve({ ok: false, error: 'ffmpeg' });
+    const proc = spawn(ffmpeg, [
+      '-v', 'error',
+      '-i', filePath,
+      '-map', `0:s:${subIdx}`,
+      '-f', 'webvtt',
+      'pipe:1',
+    ], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let buf = '';
+    proc.stdout.setEncoding('utf8');
+    proc.stdout.on('data', (d) => buf += d);
+    proc.on('exit', (code) => {
+      if (code === 0 && buf.length > 10) resolve({ ok: true, vtt: buf });
+      else resolve({ ok: false, error: 'extract failed' });
+    });
+    proc.on('error', (e) => resolve({ ok: false, error: String(e) }));
+  });
+});
 
 // HTTP server local que transmuxa qualquer arquivo (MKV/AVI/etc) pra fMP4
 // streamado, pra <video> tocar nativamente. Tambem serve arquivos suportados
@@ -1103,6 +1195,10 @@ const transmuxServer = { port: 0, server: null, processes: new Map() };
 function startTransmuxServer() {
   if (transmuxServer.server) return;
   transmuxServer.server = http.createServer((req, res) => {
+    // CORS aberto pra origin file:// do Electron poder consumir
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
     try {
       const u = new URL(req.url, 'http://127.0.0.1');
       if (u.pathname !== '/stream') { res.writeHead(404); res.end(); return; }
@@ -1132,35 +1228,58 @@ function startTransmuxServer() {
         }
         return;
       }
-      // Transmux com ffmpeg para fMP4 (sem reencode = rapido, sem perda)
+      // Transmux com ffmpeg para fMP4. Reencode sempre pra H.264+AAC porque
+      // <video> do Chromium nao suporta HEVC/AV1/MPEG2/etc. ultrafast preset
+      // mantem CPU razoavel.
       const ffmpeg = getFfmpegPath();
       if (!ffmpeg) { res.writeHead(500); res.end('ffmpeg not found'); return; }
-      res.writeHead(200, { 'Content-Type': 'video/mp4', 'Cache-Control': 'no-store' });
+      res.writeHead(200, {
+        'Content-Type': 'video/mp4',
+        'Cache-Control': 'no-store',
+        'Connection': 'keep-alive',
+        'Transfer-Encoding': 'chunked',
+      });
       const ss = u.searchParams.get('ss'); // seek seconds
+      const audioIdx = parseInt(u.searchParams.get('a') || '0', 10);
       const args = [];
       if (ss) { args.push('-ss', ss); }
       args.push(
         '-i', filePath,
         '-map', '0:v:0',
-        '-map', '0:a:0?',
-        '-c:v', 'copy',
+        '-map', `0:a:${audioIdx}?`,
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',
+        '-tune', 'zerolatency',
+        '-crf', '23',
+        '-pix_fmt', 'yuv420p',
         '-c:a', 'aac',
         '-b:a', '192k',
         '-ac', '2',
         '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+        '-frag_duration', '1000000',
         '-f', 'mp4',
         'pipe:1',
       );
+      console.log('[transmux]', path.basename(filePath), 'audio=', audioIdx);
       const proc = spawn(ffmpeg, args, { stdio: ['ignore', 'pipe', 'pipe'] });
       transmuxServer.processes.set(proc.pid, proc);
       proc.stdout.pipe(res);
-      proc.stderr.on('data', () => {}); // silencia logs
+      let stderrBuf = '';
+      proc.stderr.on('data', (d) => {
+        stderrBuf += d.toString();
+        if (stderrBuf.length > 4000) stderrBuf = stderrBuf.slice(-2000);
+      });
       const cleanup = () => {
         try { proc.kill('SIGKILL'); } catch {}
         transmuxServer.processes.delete(proc.pid);
       };
       req.on('close', cleanup);
-      proc.on('exit', () => transmuxServer.processes.delete(proc.pid));
+      proc.on('exit', (code) => {
+        if (code !== 0 && code !== null) {
+          console.error('[transmux] ffmpeg exit', code, '\n', stderrBuf.slice(-1000));
+        }
+        transmuxServer.processes.delete(proc.pid);
+      });
     } catch (e) {
       try { res.writeHead(500); res.end(String(e)); } catch {}
     }
@@ -1378,6 +1497,10 @@ function createWindow() {
     },
   });
   win.loadFile('index.html');
+  // Espelha console do renderer pro terminal (silencioso, util pra reportar bugs)
+  win.webContents.on('console-message', (_e, level, message) => {
+    if (level >= 2) console.log(`[renderer] ${message}`);
+  });
   // Toggle DevTools com Ctrl+Shift+I (util pra debug do player)
   win.webContents.on('before-input-event', (_e, input) => {
     if (input.control && input.shift && (input.key === 'I' || input.key === 'i')) {

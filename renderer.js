@@ -557,6 +557,13 @@ const player = {
   el: null, video: null, hideTimer: null, current: null, nextTimer: null, nextRemaining: 0,
 };
 
+function langCodeLabel(code) {
+  const map = { 'pt': 'Português', 'pt-br': 'Português (BR)', 'por': 'Português',
+                'en': 'English', 'eng': 'English', 'es': 'Español', 'spa': 'Español',
+                'fr': 'Français', 'de': 'Deutsch', 'it': 'Italiano', 'ja': '日本語' };
+  return map[(code || '').toLowerCase()] || (code ? code.toUpperCase() : '');
+}
+
 function srtToVtt(src) {
   // Convert SRT to WebVTT (browser <track> understands VTT natively)
   let s = src.replace(/\r+/g, '');
@@ -565,6 +572,32 @@ function srtToVtt(src) {
   // Strip BOM, ensure header
   s = s.replace(/^\uFEFF/, '');
   return 'WEBVTT\n\n' + s;
+}
+
+// Desloca os timestamps do VTT por -offset (em segundos). Usado quando o stream
+// fez seek server-side: video reseta pra 0 mas as cues sao absolutas.
+function shiftVtt(vtt, offsetSec) {
+  if (!offsetSec) return vtt;
+  const parseTs = (s) => {
+    const p = s.split(':');
+    let h = 0, m = 0, sec = 0;
+    if (p.length === 3) { h = +p[0]; m = +p[1]; sec = parseFloat(p[2]); }
+    else { m = +p[0]; sec = parseFloat(p[1]); }
+    return h * 3600 + m * 60 + sec;
+  };
+  const fmt = (t) => {
+    if (t < 0) t = 0;
+    const h = Math.floor(t / 3600);
+    const m = Math.floor((t % 3600) / 60);
+    const s = (t % 60).toFixed(3).padStart(6, '0');
+    return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${s}`;
+  };
+  return vtt.replace(/(\d{1,2}:\d{2}(?::\d{2})?[\.,]\d{1,3})\s*-->\s*(\d{1,2}:\d{2}(?::\d{2})?[\.,]\d{1,3})/g, (_m, a, b) => {
+    const ta = parseTs(a.replace(',', '.')) - offsetSec;
+    const tb = parseTs(b.replace(',', '.')) - offsetSec;
+    if (tb < 0) return `${fmt(0)} --> ${fmt(0.001)}`;
+    return `${fmt(Math.max(0, ta))} --> ${fmt(tb)}`;
+  });
 }
 
 function fmtTime(sec) {
@@ -605,47 +638,60 @@ function ensurePlayerInit() {
   };
   player.el.addEventListener('mousemove', showChrome);
 
-  playBtn.onclick = () => v.paused ? v.play() : v.pause();
-  v.addEventListener('play', () => { playIcon.hidden = true; pauseIcon.hidden = false; });
-  v.addEventListener('pause', () => { playIcon.hidden = false; pauseIcon.hidden = true; });
-  v.addEventListener('click', () => v.paused ? v.play() : v.pause());
-
-  v.addEventListener('timeupdate', () => {
-    if (v.duration) fill.style.width = (v.currentTime / v.duration * 100) + '%';
-    timeEl.textContent = `${fmtTime(v.currentTime)} / ${fmtTime(v.duration)}`;
-  });
-
-  // Save progress every 4s
-  let lastSave = 0;
-  v.addEventListener('timeupdate', () => {
-    const now = Date.now();
-    if (now - lastSave > 4000 && v.duration && player.current) {
-      lastSave = now;
-      window.api.saveProgress(player.current.filePath, v.currentTime, v.duration);
-    }
-  });
+  playBtn.onclick = () => { const vv = player.video; vv.paused ? vv.play() : vv.pause(); };
+  bindVideoListeners(v);
 
   progEl.onclick = (e) => {
-    if (!v.duration) return;
+    const cur = player.current; const v = player.video;
+    const total = (cur && cur.duration) || v.duration || 0;
+    if (!total) return;
     const r = progEl.getBoundingClientRect();
-    v.currentTime = ((e.clientX - r.left) / r.width) * v.duration;
+    const target = ((e.clientX - r.left) / r.width) * total;
+    if (cur) {
+      // Seek server-side: recarrega o stream a partir do ponto
+      loadStream(target);
+    } else {
+      v.currentTime = target;
+    }
   };
 
-  back10.onclick = () => { v.currentTime = Math.max(0, v.currentTime - 10); };
-  fwd10.onclick = () => { v.currentTime = Math.min(v.duration || 0, v.currentTime + 10); };
+  back10.onclick = () => {
+    const cur = player.current; const v = player.video;
+    if (cur && cur.duration) {
+      const target = Math.max(0, (cur.virtualOffset || 0) + v.currentTime - 10);
+      loadStream(target);
+    } else { v.currentTime = Math.max(0, v.currentTime - 10); }
+  };
+  fwd10.onclick = () => {
+    const cur = player.current; const v = player.video;
+    if (cur && cur.duration) {
+      const target = Math.min(cur.duration, (cur.virtualOffset || 0) + v.currentTime + 10);
+      loadStream(target);
+    } else { v.currentTime = Math.min(v.duration || 0, v.currentTime + 10); }
+  };
 
-  muteBtn.onclick = () => { v.muted = !v.muted; volRange.value = v.muted ? 0 : v.volume; };
-  volRange.oninput = () => { v.volume = parseFloat(volRange.value); v.muted = v.volume === 0; };
+  muteBtn.onclick = () => { const v = player.video; v.muted = !v.muted; volRange.value = v.muted ? 0 : v.volume; };
+  volRange.oninput = () => { const v = player.video; v.volume = parseFloat(volRange.value); v.muted = v.volume === 0; };
 
   fsBtn.onclick = () => {
     if (document.fullscreenElement) document.exitFullscreen();
     else player.el.requestFullscreen();
   };
 
-  subsBtn.onclick = (e) => { e.stopPropagation(); subsMenu.classList.toggle('hidden'); };
+  subsBtn.onclick = (e) => { e.stopPropagation(); subsMenu.classList.toggle('hidden'); document.getElementById('playerAudioMenu')?.classList.add('hidden'); };
   document.addEventListener('click', (e) => {
     if (!subsMenu.contains(e.target) && e.target !== subsBtn) subsMenu.classList.add('hidden');
   });
+
+  // Audio menu toggle
+  const audioBtn = document.getElementById('playerAudioBtn');
+  const audioMenu = document.getElementById('playerAudioMenu');
+  if (audioBtn) {
+    audioBtn.onclick = (e) => { e.stopPropagation(); audioMenu.classList.toggle('hidden'); subsMenu.classList.add('hidden'); };
+    document.addEventListener('click', (e) => {
+      if (!audioMenu.contains(e.target) && e.target !== audioBtn) audioMenu.classList.add('hidden');
+    });
+  }
 
   document.getElementById('playerClose').onclick = () => closeEmbeddedPlayer();
 
@@ -653,6 +699,7 @@ function ensurePlayerInit() {
   document.addEventListener('keydown', (e) => {
     if (player.el.classList.contains('hidden')) return;
     if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+    const v = player.video;
     if (e.key === ' ') { e.preventDefault(); v.paused ? v.play() : v.pause(); showChrome(); }
     else if (e.key === 'ArrowRight') { v.currentTime = Math.min(v.duration||0, v.currentTime + 5); showChrome(); }
     else if (e.key === 'ArrowLeft') { v.currentTime = Math.max(0, v.currentTime - 5); showChrome(); }
@@ -664,7 +711,58 @@ function ensurePlayerInit() {
     else if (e.key === 'Escape') { if (document.fullscreenElement) document.exitFullscreen(); else closeEmbeddedPlayer(); }
   });
 
+}
+
+// Listeners ligados diretamente ao <video>. Extraido pra poder reanexar
+// quando clonamos o elemento em resetVideoElement.
+function bindVideoListeners(v) {
+  const playIcon = document.getElementById('playerPlayIcon');
+  const pauseIcon = document.getElementById('playerPauseIcon');
+  const timeEl = document.getElementById('playerTime');
+  const fill = document.getElementById('playerProgressFill');
+  v.addEventListener('play', () => { playIcon.hidden = true; pauseIcon.hidden = false; });
+  v.addEventListener('pause', () => { playIcon.hidden = false; pauseIcon.hidden = true; });
+  v.addEventListener('click', () => v.paused ? v.play() : v.pause());
+  v.addEventListener('timeupdate', () => {
+    const total = (player.current && player.current.duration) || v.duration || 0;
+    const cur = (player.current ? (player.current.virtualOffset || 0) : 0) + v.currentTime;
+    if (total) fill.style.width = (cur / total * 100) + '%';
+    timeEl.textContent = `${fmtTime(cur)} / ${fmtTime(total)}`;
+  });
+  let lastSave = 0;
+  v.addEventListener('timeupdate', () => {
+    const now = Date.now();
+    const total = (player.current && player.current.duration) || v.duration || 0;
+    const cur = (player.current ? (player.current.virtualOffset || 0) : 0) + v.currentTime;
+    if (now - lastSave > 4000 && total && player.current) {
+      lastSave = now;
+      window.api.saveProgress(player.current.filePath, cur, total);
+    }
+  });
   v.addEventListener('ended', () => onPlaybackEnded());
+  v.addEventListener('error', () => {
+    const err = v.error;
+    const codeMap = { 1: 'aborted', 2: 'rede', 3: 'decode', 4: 'formato/origem nao suportado' };
+    const msg = err ? `Erro de player (${codeMap[err.code] || err.code}): ${err.message || ''}` : 'Erro desconhecido';
+    console.error('player error', err, v.src);
+    showToast(msg, 8000);
+  });
+  v.addEventListener('stalled', () => console.warn('player stalled'));
+  v.addEventListener('waiting', () => console.log('player waiting buffer'));
+}
+
+// Substitui o <video> por um clone novo. HTML5 mantem entradas em
+// videoEl.textTracks mesmo apos remover os <track> filhos — unica forma de
+// resetar e trocar o elemento.
+function resetVideoElement() {
+  if (!player.video) return;
+  const old = player.video;
+  const fresh = old.cloneNode(false); // sem filhos (sem <source>/<track> antigos)
+  fresh.removeAttribute('src');
+  fresh.controls = false;
+  old.replaceWith(fresh);
+  player.video = fresh;
+  bindVideoListeners(fresh);
 }
 
 function buildSubsMenu(subs) {
@@ -685,20 +783,89 @@ function buildSubsMenu(subs) {
   });
 }
 
-function selectSub(idx) {
+async function selectSub(idx) {
   const v = player.video;
-  for (let i = 0; i < v.textTracks.length; i++) {
-    v.textTracks[i].mode = (i === idx) ? 'showing' : 'disabled';
+  const cur = player.current;
+  if (!cur) return;
+  // -1 = desligar
+  if (idx < 0) {
+    cur.activeSubIdx = -1;
+    for (let i = 0; i < v.textTracks.length; i++) v.textTracks[i].mode = 'disabled';
+    document.querySelectorAll('#playerSubsMenu .player-subs-item').forEach((el, i) => {
+      el.classList.toggle('active', i === 0);
+    });
+    document.getElementById('playerSubsMenu').classList.add('hidden');
+    return;
   }
+  const sub = cur.subs[idx];
+  if (!sub) return;
+
+  // Embutida: extrai via ffmpeg sob demanda e guarda VTT bruto
+  if (sub.kind === 'embed' && !sub._vttRaw) {
+    showToast('Extraindo legenda…', 1800);
+    const r = await window.api.extractSub(cur.filePath, sub.index);
+    if (!r.ok) { showToast('Falha ao extrair legenda', 3500); return; }
+    sub._vttRaw = r.vtt;
+  }
+
+  cur.activeSubIdx = idx;
+  applySubTracks();
   document.querySelectorAll('#playerSubsMenu .player-subs-item').forEach((el, i) => {
-    el.classList.toggle('active', (i - 1) === idx); // first item is "Off" -> idx -1
+    el.classList.toggle('active', (i - 1) === idx);
   });
   document.getElementById('playerSubsMenu').classList.add('hidden');
 }
 
+// Reconstroi os <track> com timestamps deslocados por -virtualOffset.
+// Sidecar usa s.content; embed usa sub._vttRaw (preenchido em selectSub).
+function applySubTracks() {
+  const v = player.video;
+  const cur = player.current;
+  if (!v || !cur) return;
+  // Remove tracks existentes
+  Array.from(v.querySelectorAll('track')).forEach((t) => {
+    if (t.src && t.src.startsWith('blob:')) URL.revokeObjectURL(t.src);
+    t.remove();
+  });
+  const offset = cur.virtualOffset || 0;
+  cur.subs.forEach((s, i) => {
+    let raw = null;
+    if (s.kind === 'sidecar') {
+      raw = s.ext === 'vtt' ? s.content : srtToVtt(s.content);
+    } else if (s.kind === 'embed' && s._vttRaw) {
+      raw = s._vttRaw;
+    }
+    if (!raw) { s._trackIdx = -1; return; }
+    const shifted = shiftVtt(raw, offset);
+    const blob = new Blob([shifted], { type: 'text/vtt' });
+    const url = URL.createObjectURL(blob);
+    const t = document.createElement('track');
+    t.kind = 'subtitles';
+    t.label = s.label;
+    t.srclang = (s.lang || 'und').slice(0, 2);
+    t.src = url;
+    v.appendChild(t);
+    s._trackIdx = v.textTracks.length - 1;
+  });
+  // Aplica modo
+  const active = cur.activeSubIdx != null ? cur.activeSubIdx : -1;
+  setTimeout(() => {
+    for (let i = 0; i < v.textTracks.length; i++) v.textTracks[i].mode = 'disabled';
+    if (active >= 0 && cur.subs[active] && cur.subs[active]._trackIdx >= 0) {
+      v.textTracks[cur.subs[active]._trackIdx].mode = 'showing';
+    }
+  }, 50);
+}
+
 async function openEmbeddedPlayer({ url, filePath, item, episode, autoNext, autoNextSeconds }) {
   ensurePlayerInit();
-  player.current = { filePath, item, episode, autoNext, autoNextSeconds };
+  // Reset total do <video>: HTML5 nao remove textTracks da colecao mesmo
+  // depois de remover <track>. Clonar o elemento descarta tudo (legendas
+  // anteriores nao "vazam" pro proximo episodio/serie).
+  resetVideoElement();
+  // Probe pra duracao real + lista de faixas de audio + idioma preferido
+  const probe = await window.api.probe(filePath).catch(() => ({ duration: 0, audio: [], preferred: 0 }));
+  player.current = { filePath, item, episode, autoNext, autoNextSeconds, baseUrl: url, audioIdx: probe.preferred || 0, audioTracks: probe.audio || [], duration: probe.duration || 0, virtualOffset: 0, activeSubIdx: -1 };
   cancelAutoNext();
   player.el.classList.remove('hidden', 'hide-chrome');
 
@@ -708,66 +875,100 @@ async function openEmbeddedPlayer({ url, filePath, item, episode, autoNext, auto
     ? `T${String(episode.season).padStart(2,'0')} · E${String(episode.episode).padStart(2,'0')}${episode.title ? ' — ' + episode.title : ''}`
     : '';
 
-  // Clear previous tracks
+  buildAudioMenu(probe.audio || [], player.current.audioIdx);
+
+  // Coleta legendas: sidecars do diretorio + embutidas no MKV (extraidas sob demanda)
+  let subs = [];
+  try {
+    const r = await window.api.getSidecars(filePath);
+    if (r && r.ok) subs = (r.subs || []).map((s) => ({ ...s, kind: 'sidecar' }));
+  } catch {}
+  for (const es of (probe.subs || [])) {
+    subs.push({
+      kind: 'embed',
+      index: es.index,
+      lang: es.lang,
+      label: (langCodeLabel(es.lang) || es.title || `Faixa ${es.index + 1}`) + ' (embutida)',
+      codec: es.codec,
+    });
+  }
+  player.current.subs = subs;
+  buildSubsMenu(subs);
+
+  // Resume seek
+  const savedProg = state.progress[filePath];
+  let startSec = 0;
+  if (savedProg && savedProg.length && savedProg.time && savedProg.time / savedProg.length < 0.95) {
+    startSec = Math.max(0, savedProg.time - 3);
+  }
+  await loadStream(startSec);
+}
+
+// Carrega/recarrega o <video> apontando pro stream com seek server-side (?ss=)
+async function loadStream(seekSec) {
+  const cur = player.current;
+  if (!cur) return;
   const v = player.video;
   v.pause();
   while (v.firstChild) v.removeChild(v.firstChild);
   v.removeAttribute('src');
-  v.load();
 
-  // Source
+  cur.virtualOffset = seekSec || 0;
+  const url = cur.baseUrl + (seekSec ? `&ss=${seekSec}` : '') + `&a=${cur.audioIdx}`;
+
   const src = document.createElement('source');
   src.src = url;
+  src.type = 'video/mp4';
   v.appendChild(src);
 
-  // Sidecars (subtitles)
-  let subs = [];
-  try {
-    const r = await window.api.getSidecars(filePath);
-    if (r && r.ok) subs = r.subs || [];
-  } catch {}
-  for (const s of subs) {
-    const vtt = s.ext === 'vtt' ? s.content : srtToVtt(s.content);
-    const blob = new Blob([vtt], { type: 'text/vtt' });
-    const blobUrl = URL.createObjectURL(blob);
-    const t = document.createElement('track');
-    t.kind = 'subtitles';
-    t.label = s.label;
-    t.srclang = (s.lang || 'und').slice(0,2);
-    t.src = blobUrl;
-    v.appendChild(t);
-  }
-  buildSubsMenu(subs);
+  // Reconstroi <track>s com cues deslocadas pelo virtualOffset. Mantem a sub
+  // ativa selecionada (se houver) — caso contrario fica desligada por padrao.
+  applySubTracks();
 
   v.load();
-
-  // Resume from saved progress
-  const savedProg = state.progress[filePath];
   v.addEventListener('loadedmetadata', () => {
-    if (savedProg && savedProg.length && savedProg.time && savedProg.time / savedProg.length < 0.95) {
-      v.currentTime = Math.max(0, savedProg.time - 3);
-    }
-    // Auto-show first sub track if any
-    if (v.textTracks.length) {
-      v.textTracks[0].mode = 'showing';
-      const firstItem = document.querySelector('#playerSubsMenu .player-subs-item[data-idx="0"]');
-      if (firstItem) {
-        document.querySelectorAll('#playerSubsMenu .player-subs-item').forEach(el => el.classList.remove('active'));
-        firstItem.classList.add('active');
-      }
-    }
     v.play().catch(()=>{});
   }, { once: true });
+}
+
+function buildAudioMenu(tracks, currentIdx) {
+  let menu = document.getElementById('playerAudioMenu');
+  let btn = document.getElementById('playerAudioBtn');
+  if (!btn) return; // criado via HTML em update futura
+  menu.innerHTML = '';
+  if (!tracks.length) { btn.style.display = 'none'; return; }
+  btn.style.display = '';
+  tracks.forEach((tr, i) => {
+    const it = document.createElement('div');
+    it.className = 'player-subs-item' + (i === currentIdx ? ' active' : '');
+    const langLabel = (tr.lang || '').toUpperCase() || '?';
+    it.textContent = `${langLabel}${tr.title ? ' — ' + tr.title : ''} (${tr.codec})`;
+    it.onclick = async () => {
+      const cur = player.current;
+      if (!cur || cur.audioIdx === i) return;
+      cur.audioIdx = i;
+      const cT = player.video.currentTime + (cur.virtualOffset || 0);
+      await loadStream(cT);
+      buildAudioMenu(tracks, i);
+      menu.classList.add('hidden');
+      showToast(`Áudio: ${langLabel}`, 2000);
+    };
+    menu.appendChild(it);
+  });
 }
 
 function closeEmbeddedPlayer() {
   cancelAutoNext();
   if (!player.el) return;
   const v = player.video;
-  if (player.current && v.duration) {
-    window.api.saveProgress(player.current.filePath, v.currentTime, v.duration);
+  if (player.current) {
+    const total = player.current.duration || v.duration || 0;
+    const cur = (player.current.virtualOffset || 0) + (v.currentTime || 0);
+    if (total && cur > 0) {
+      window.api.saveProgress(player.current.filePath, cur, total);
+    }
+    window.api.logClose(player.current.filePath);
   }
-  if (player.current) window.api.logClose(player.current.filePath);
   v.pause();
   v.removeAttribute('src');
   v.load();
