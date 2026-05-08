@@ -1,6 +1,6 @@
 {
   "name": "mediaflix",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "Netflix-like local media manager for Windows. Plays via VLC and remembers where you stopped.",
   "main": "main.js",
   "scripts": {
@@ -17,7 +17,19 @@
     "appId": "com.mediaflix.app",
     "productName": "Mediaflix",
     "win": {
-      "target": "nsis"
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ],
+      "artifactName": "Mediaflix-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Mediaflix",
+      "deleteAppDataOnUninstall": false
     },
     "files": [
       "main.js",
@@ -25,8 +37,13 @@
       "renderer.js",
       "titleParser.js",
       "index.html",
-      "styles.css"
-    ]
+      "styles.css",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist"
+    }
   },
   "dependencies": {
     "parse-torrent-title": "^3.0.1"
