@@ -25,4 +25,11 @@ contextBridge.exposeInMainWorld('api', {
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
   getTrending: () => ipcRenderer.invoke('discover:trending'),
   readImage: (p) => ipcRenderer.invoke('image:read', p),
+  // Player embutido / toggles
+  getSidecars: (p) => ipcRenderer.invoke('player:sidecars', p),
+  saveProgress: (p, time, length) => ipcRenderer.invoke('progress:save', p, time, length),
+  logOpen: (p) => ipcRenderer.invoke('history:logOpen', p),
+  logClose: (p) => ipcRenderer.invoke('history:logClose', p),
+  setToggle: (key, value) => ipcRenderer.invoke('config:setToggle', key, value),
+  setNumber: (key, value) => ipcRenderer.invoke('config:setNumber', key, value),
 });
