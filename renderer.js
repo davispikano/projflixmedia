@@ -543,7 +543,7 @@ async function playFile(filePath, item, episode) {
     // Player embutido — abre overlay com o vídeo
     await openEmbeddedPlayer({ url: res.url, filePath, item, episode, autoNext: cfg.autoNext, autoNextSeconds: cfg.autoNextSeconds || 8 });
   } else {
-    showToast('Abrindo no VLC…');
+    showToast(res.fallbackMsg || 'Abrindo no VLC…', 4000);
   }
   await window.api.logOpen(filePath);
   // Refresh history immediately so "Continuar assistindo" updates without waiting
@@ -1077,6 +1077,37 @@ async function init() {
   state.library = await window.api.getLibrary();
   await renderAll();
   if (!state.library.length) route('home');
+
+  // Versão visível + checagem de update silenciosa
+  try {
+    const v = await window.api.getVersion();
+    const txt = document.getElementById('versionText');
+    const pill = document.getElementById('versionPill');
+    const dot = document.getElementById('versionDot');
+    if (txt && v && v.version) {
+      txt.textContent = 'v' + v.version;
+      pill.onclick = async () => {
+        showToast('Verificando atualizações…', 2500);
+        const u = await window.api.checkUpdate();
+        if (!u || !u.ok) { showToast('Não consegui checar (sem internet?)', 3500); return; }
+        if (u.newer) {
+          window.api.openExternal(u.downloadUrl || u.url);
+        } else {
+          showToast(`Você já está na última versão (v${u.current})`, 3500);
+        }
+      };
+      // Background check após 3s
+      setTimeout(async () => {
+        const u = await window.api.checkUpdate();
+        if (u && u.ok && u.newer) {
+          pill.classList.add('has-update');
+          dot.classList.remove('hidden');
+          txt.textContent = `v${u.current} → v${u.latest.replace(/^v/, '')}`;
+          showToast(`Nova versão disponível: v${u.latest.replace(/^v/, '')} — clique no número da versão para baixar`, 6000);
+        }
+      }, 3000);
+    }
+  } catch {}
 
   // Discover row (trending). Background-loaded so the UI never blocks.
   renderTrending();

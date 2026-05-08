@@ -451,15 +451,24 @@ function stopPolling() {
 }
 
 async function playFile(filePath) {
-  // Se player embutido está ativo, devolvemos a URL custom pro renderer reproduzir
-  // sem nem invocar VLC.
   if (config.embeddedPlayer) {
-    return { ok: true, embedded: true, url: 'mediaflix-file:///' + filePath.replace(/\\/g, '/') };
+    // Garante que o transmux server esta rodando, depois aponta o <video>
+    // pro endpoint /stream que cuida de transmux on-the-fly pra MKV/AVI/etc.
+    startTransmuxServer();
+    if (!transmuxServer.port) {
+      // espera bind
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    const url = `http://127.0.0.1:${transmuxServer.port}/stream?f=${encodeURIComponent(filePath)}`;
+    return { ok: true, embedded: true, url, ext: path.extname(filePath).toLowerCase() };
   }
+  return playFileVlc(filePath, null);
+}
 
+async function playFileVlc(filePath, embeddedFallbackMsg) {
   const vlc = findVlcPath();
   if (!vlc) {
-    return { ok: false, error: 'VLC não encontrado. Instale o VLC ou ative o player embutido nas Configurações.' };
+    return { ok: false, error: 'VLC nao encontrado. Instale o VLC para tocar este formato.' };
   }
 
   const saved = progress[filePath];
@@ -509,7 +518,7 @@ async function playFile(filePath) {
   // Give VLC a moment to bind the HTTP port, then start polling
   setTimeout(() => startPolling(filePath), 2500);
 
-  return { ok: true };
+  return { ok: true, fallbackMsg: embeddedFallbackMsg || null };
 }
 
 // ---------- IPC ----------
@@ -1077,6 +1086,96 @@ ipcMain.handle('library:resetCache', () => {
 // ---------- Embedded player support ----------
 const SUBTITLE_EXT = new Set(['.srt', '.vtt', '.ass', '.ssa']);
 
+// ffmpeg-static: caminho do binario embutido. Em prod (asar), o exe fica em
+// resources/app.asar.unpacked/node_modules/ffmpeg-static/ffmpeg.exe.
+const ffmpegStaticPath = require('ffmpeg-static');
+function getFfmpegPath() {
+  if (!ffmpegStaticPath) return null;
+  // Quando empacotado, o caminho vem dentro do asar — substitui pra unpacked
+  return ffmpegStaticPath.replace('app.asar', 'app.asar.unpacked');
+}
+
+// HTTP server local que transmuxa qualquer arquivo (MKV/AVI/etc) pra fMP4
+// streamado, pra <video> tocar nativamente. Tambem serve arquivos suportados
+// como progressive download.
+const transmuxServer = { port: 0, server: null, processes: new Map() };
+
+function startTransmuxServer() {
+  if (transmuxServer.server) return;
+  transmuxServer.server = http.createServer((req, res) => {
+    try {
+      const u = new URL(req.url, 'http://127.0.0.1');
+      if (u.pathname !== '/stream') { res.writeHead(404); res.end(); return; }
+      const filePath = decodeURIComponent(u.searchParams.get('f') || '');
+      if (!filePath || !fs.existsSync(filePath)) { res.writeHead(404); res.end('not found'); return; }
+      const ext = path.extname(filePath).toLowerCase();
+      const NATIVE = new Set(['.mp4', '.webm', '.m4v', '.mov']);
+      if (NATIVE.has(ext)) {
+        // Stream direto com Range support
+        const stat = fs.statSync(filePath);
+        const range = req.headers.range;
+        const mime = ext === '.webm' ? 'video/webm' : 'video/mp4';
+        if (range) {
+          const m = range.match(/bytes=(\d+)-(\d*)/);
+          const start = parseInt(m[1], 10);
+          const end = m[2] ? parseInt(m[2], 10) : stat.size - 1;
+          res.writeHead(206, {
+            'Content-Range': `bytes ${start}-${end}/${stat.size}`,
+            'Accept-Ranges': 'bytes',
+            'Content-Length': end - start + 1,
+            'Content-Type': mime,
+          });
+          fs.createReadStream(filePath, { start, end }).pipe(res);
+        } else {
+          res.writeHead(200, { 'Content-Length': stat.size, 'Content-Type': mime, 'Accept-Ranges': 'bytes' });
+          fs.createReadStream(filePath).pipe(res);
+        }
+        return;
+      }
+      // Transmux com ffmpeg para fMP4 (sem reencode = rapido, sem perda)
+      const ffmpeg = getFfmpegPath();
+      if (!ffmpeg) { res.writeHead(500); res.end('ffmpeg not found'); return; }
+      res.writeHead(200, { 'Content-Type': 'video/mp4', 'Cache-Control': 'no-store' });
+      const ss = u.searchParams.get('ss'); // seek seconds
+      const args = [];
+      if (ss) { args.push('-ss', ss); }
+      args.push(
+        '-i', filePath,
+        '-map', '0:v:0',
+        '-map', '0:a:0?',
+        '-c:v', 'copy',
+        '-c:a', 'aac',
+        '-b:a', '192k',
+        '-ac', '2',
+        '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+        '-f', 'mp4',
+        'pipe:1',
+      );
+      const proc = spawn(ffmpeg, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      transmuxServer.processes.set(proc.pid, proc);
+      proc.stdout.pipe(res);
+      proc.stderr.on('data', () => {}); // silencia logs
+      const cleanup = () => {
+        try { proc.kill('SIGKILL'); } catch {}
+        transmuxServer.processes.delete(proc.pid);
+      };
+      req.on('close', cleanup);
+      proc.on('exit', () => transmuxServer.processes.delete(proc.pid));
+    } catch (e) {
+      try { res.writeHead(500); res.end(String(e)); } catch {}
+    }
+  });
+  transmuxServer.server.listen(0, '127.0.0.1', () => {
+    transmuxServer.port = transmuxServer.server.address().port;
+    console.log('transmux server on', transmuxServer.port);
+  });
+}
+
+function killAllTransmux() {
+  for (const p of transmuxServer.processes.values()) { try { p.kill('SIGKILL'); } catch {} }
+  transmuxServer.processes.clear();
+}
+
 function detectSubLang(name) {
   // common patterns: video.pt-BR.srt / video.en.srt / video.por.srt
   const m = name.match(/\.([a-z]{2,3}(?:-[a-z]{2})?)\.[a-z]+$/i);
@@ -1200,6 +1299,57 @@ ipcMain.handle('config:setNumber', (_e, key, value) => {
   return { ok: true, key, value: config[key] };
 });
 
+ipcMain.handle('app:version', () => {
+  return { version: app.getVersion(), name: app.getName() };
+});
+
+function compareSemver(a, b) {
+  const pa = String(a).replace(/^v/, '').split('.').map((x) => parseInt(x, 10) || 0);
+  const pb = String(b).replace(/^v/, '').split('.').map((x) => parseInt(x, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    const da = pa[i] || 0;
+    const db = pb[i] || 0;
+    if (da !== db) return da - db;
+  }
+  return 0;
+}
+
+ipcMain.handle('app:checkUpdate', async () => {
+  return new Promise((resolve) => {
+    const req = https.request({
+      host: 'api.github.com',
+      path: '/repos/davispikano/projflixmedia/releases/latest',
+      method: 'GET',
+      headers: { 'User-Agent': 'mediaflix-app', 'Accept': 'application/vnd.github+json' },
+      timeout: 8000,
+    }, (res) => {
+      let data = '';
+      res.on('data', (c) => data += c);
+      res.on('end', () => {
+        try {
+          const j = JSON.parse(data);
+          const latest = j.tag_name || j.name || '';
+          const current = app.getVersion();
+          const newer = compareSemver(latest, current) > 0;
+          const asset = (j.assets || []).find((a) => /\.exe$/i.test(a.name));
+          resolve({
+            ok: true,
+            current,
+            latest,
+            newer,
+            url: j.html_url,
+            downloadUrl: asset ? asset.browser_download_url : (j.html_url || null),
+            notes: j.body || '',
+          });
+        } catch (e) { resolve({ ok: false, error: 'parse' }); }
+      });
+    });
+    req.on('error', (e) => resolve({ ok: false, error: String(e.message || e) }));
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'timeout' }); });
+    req.end();
+  });
+});
+
 // Expose local image files to the renderer via file:// — but we need to read them as data URLs because Electron with sandbox blocks file:// from custom origins. Easier: read as base64.
 ipcMain.handle('image:read', (_e, filePath) => {
   try {
@@ -1228,6 +1378,12 @@ function createWindow() {
     },
   });
   win.loadFile('index.html');
+  // Toggle DevTools com Ctrl+Shift+I (util pra debug do player)
+  win.webContents.on('before-input-event', (_e, input) => {
+    if (input.control && input.shift && (input.key === 'I' || input.key === 'i')) {
+      win.webContents.toggleDevTools();
+    }
+  });
 }
 
 app.whenReady().then(() => {
@@ -1247,6 +1403,7 @@ app.whenReady().then(() => {
 });
 app.on('window-all-closed', () => {
   stopPolling();
+  killAllTransmux();
   if (vlcProcess) { try { vlcProcess.kill(); } catch {} }
   if (process.platform !== 'darwin') app.quit();
 });

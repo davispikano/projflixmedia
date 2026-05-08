@@ -32,4 +32,6 @@ contextBridge.exposeInMainWorld('api', {
   logClose: (p) => ipcRenderer.invoke('history:logClose', p),
   setToggle: (key, value) => ipcRenderer.invoke('config:setToggle', key, value),
   setNumber: (key, value) => ipcRenderer.invoke('config:setNumber', key, value),
+  getVersion: () => ipcRenderer.invoke('app:version'),
+  checkUpdate: () => ipcRenderer.invoke('app:checkUpdate'),
 });

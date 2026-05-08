@@ -898,3 +898,10 @@ main {
 .player-loading { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; }
 .spinner { width:48px; height:48px; border:3px solid rgba(255,255,255,.15); border-top-color:var(--accent); border-radius:50%; animation:spin 1s linear infinite; }
 @keyframes spin { to { transform:rotate(360deg); } }
+
+/* Version pill */
+.version-pill { background:rgba(255,255,255,.06); border:1px solid var(--line); color:var(--text-dim); font-family:'JetBrains Mono',monospace; font-size:11px; padding:3px 8px; border-radius:999px; margin-left:10px; cursor:pointer; display:inline-flex; align-items:center; gap:6px; transition:.15s; }
+.version-pill:hover { background:rgba(255,255,255,.12); color:var(--text); }
+.version-pill.has-update { background:var(--accent-soft); border-color:var(--accent); color:#fff; }
+.version-dot { width:6px; height:6px; border-radius:50%; background:var(--accent); box-shadow:0 0 8px var(--accent); }
+.version-dot.hidden { display:none; }
