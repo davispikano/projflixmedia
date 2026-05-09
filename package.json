@@ -1,6 +1,6 @@
 {
   "name": "mediaflix",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "Netflix-like local media manager for Windows. Plays via VLC and remembers where you stopped.",
   "main": "main.js",
   "scripts": {

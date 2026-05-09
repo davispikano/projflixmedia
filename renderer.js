@@ -1411,7 +1411,13 @@ async function init() {
   // Detail close
   $('#detailClose').addEventListener('click', closeDetail);
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !$('#detail').classList.contains('hidden')) closeDetail();
+    if (e.key !== 'Escape') return;
+    // Se o player ou o modal de busca estao abertos, nao fecha o detalhe.
+    // O proprio player consome o ESC. Sem essa guarda, o ESC fecha player
+    // E detail no mesmo evento, jogando o usuario direto pra home.
+    if (player.el && !player.el.classList.contains('hidden')) return;
+    if (!$('#searchModal').classList.contains('hidden')) return;
+    if (!$('#detail').classList.contains('hidden')) closeDetail();
   });
 
   // Periodic refresh of progress + history so the "Continuar" row stays fresh
