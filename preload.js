@@ -27,7 +27,8 @@ contextBridge.exposeInMainWorld('api', {
   readImage: (p) => ipcRenderer.invoke('image:read', p),
   // Player embutido / toggles
   getSidecars: (p) => ipcRenderer.invoke('player:sidecars', p),
-  saveProgress: (p, time, length) => ipcRenderer.invoke('progress:save', p, time, length),
+  getThumbnail: (p) => ipcRenderer.invoke('thumbnail:get', p),
+  saveProgress: (p, time, length, updatedAt) => ipcRenderer.invoke('progress:save', p, time, length, updatedAt),
   logOpen: (p) => ipcRenderer.invoke('history:logOpen', p),
   logClose: (p) => ipcRenderer.invoke('history:logClose', p),
   setToggle: (key, value) => ipcRenderer.invoke('config:setToggle', key, value),

@@ -7,6 +7,8 @@ const state = {
   progress: {},
   history: {},
   currentDetail: null,
+  currentProfile: null,
+  profiles: [],
   imageCache: new Map(),
 };
 
@@ -83,6 +85,59 @@ async function loadImage(filePath) {
   return data;
 }
 
+function episodeThumbSrc(ep) {
+  if (ep && ep.stillPath) return `https://image.tmdb.org/t/p/w500${ep.stillPath}`;
+  return '';
+}
+
+function episodeThumbFallbackStyle(item) {
+  const bg = item && (item.banner || item.poster);
+  if (!bg) return '';
+  return ` style="background-image:linear-gradient(180deg, rgba(0,0,0,.10), rgba(0,0,0,.45)), url('${bg}')"`;
+}
+
+function episodeThumbImg(ep) {
+  const primary = episodeThumbSrc(ep);
+  const src = primary || 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+  const tmdb = primary ? '1' : '0';
+  return `<img loading="lazy" src="${src}" data-episode-path="${escapeHtml(ep.path)}" data-tmdb="${tmdb}" alt="" onerror="handleEpisodeThumbError(this)" />`;
+}
+
+async function loadLocalEpisodeThumb(img) {
+  if (!img) return false;
+  if (img.dataset.localTried === '1') {
+    img.style.display = 'none';
+    img.closest('.episode-thumb,.player-eps-thumb')?.classList.add('fallback-visible');
+    return false;
+  }
+  img.dataset.localTried = '1';
+  const filePath = img.dataset.episodePath;
+  if (!filePath || !window.api.getThumbnail) return false;
+  try {
+    const r = await window.api.getThumbnail(filePath);
+    if (r && r.ok && r.data) {
+      img.style.display = '';
+      img.closest('.episode-thumb,.player-eps-thumb')?.classList.remove('fallback-visible');
+      img.src = r.data;
+      return true;
+    }
+  } catch (e) {
+    console.warn('thumbnail local falhou', e);
+  }
+  img.style.display = 'none';
+  img.closest('.episode-thumb,.player-eps-thumb')?.classList.add('fallback-visible');
+  return false;
+}
+
+window.handleEpisodeThumbError = (img) => { loadLocalEpisodeThumb(img); };
+
+function hydrateEpisodeThumbs(root = document) {
+  root.querySelectorAll('img[data-episode-path]').forEach((img) => {
+    if (img.dataset.tmdb === '1' && img.complete && img.naturalWidth > 1) return;
+    if (img.dataset.tmdb !== '1') loadLocalEpisodeThumb(img);
+  });
+}
+
 function showToast(msg, ms = 2600) {
   const t = $('#toast');
   t.textContent = msg;
@@ -117,12 +172,22 @@ async function renderHero() {
     <div class="hero-bg" style="${bg ? `background-image:url('${bg}')` : 'background:linear-gradient(135deg,#1a1a1f,#0a0a0b)'}"></div>
     <div class="hero-fade"></div>
     <div class="hero-content">
+      <div class="hero-mobile-brand"><span class="hero-n">M</span><span>MediaFlix</span></div>
       <span class="kicker">${prog ? 'Continuar' : 'Em destaque'}</span>
       <h1 class="hero-title">${escapeHtml(featured.title)}</h1>
       <div class="hero-meta">
         ${meta.map((m, i) => `${i ? '<span class="dot"></span>' : ''}<span>${m}</span>`).join('')}
         ${prog ? `<span class="dot"></span><span>${Math.round(prog.ratio * 100)}% assistido</span>` : ''}
       </div>
+      <p class="hero-mobile-overview">${escapeHtml(featured.overview || 'Continue sua sessão no MediaFlix com reprodução rápida, progresso salvo e episódios organizados.')}</p>
+      <div class="hero-mobile-actions" aria-label="Ações rápidas">
+        <button class="hero-icon-btn" id="heroMyList" type="button" aria-label="Minha lista"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 5v14M5 12h14"/></svg></button>
+        <button class="hero-icon-btn" id="heroDetailsIcon" type="button" aria-label="Detalhes"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 17v-6"/><path d="M12 7h.01"/><circle cx="12" cy="12" r="9"/></svg></button>
+        <button class="btn-primary hero-watch-now" id="heroPlayMobile" type="button"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg><span>Assistir agora</span></button>
+        <button class="hero-icon-btn" id="heroRate" type="button" aria-label="Gostei"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M7 10v10H4V10h3zM7 10l4-7 1 1a3 3 0 0 1 .6 3.2L12 9h6a2 2 0 0 1 2 2.3l-1 7A2 2 0 0 1 17 20H7"/></svg></button>
+        <button class="hero-icon-btn" id="heroAdd" type="button" aria-label="Adicionar"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 5v14M5 12h14"/></svg></button>
+      </div>
+      <div class="hero-mobile-genres">MediaFlix <span>•</span> streaming local <span>•</span> episódios</div>
       <div class="hero-actions">
         <button class="btn-primary" id="heroPlay">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg>
@@ -133,8 +198,14 @@ async function renderHero() {
     </div>
   `;
 
+  $('#hero').setAttribute('aria-busy', 'false');
   $('#heroPlay').addEventListener('click', () => playItem(featured));
   $('#heroInfo').addEventListener('click', () => openDetail(featured));
+  $('#heroPlayMobile')?.addEventListener('click', () => playItem(featured));
+  $('#heroDetailsIcon')?.addEventListener('click', () => openDetail(featured));
+  $('#heroMyList')?.addEventListener('click', () => showToast('Já está na sua biblioteca'));
+  $('#heroRate')?.addEventListener('click', () => showToast('Marcado como gostei'));
+  $('#heroAdd')?.addEventListener('click', () => showToast('Adicionado aos favoritos'));
 }
 
 function escapeHtml(s) {
@@ -268,6 +339,32 @@ async function openDetail(item) {
   $('#detailKicker').textContent = item.type === 'series' ? 'Série' : 'Filme';
   $('#detailTitle').textContent = item.title;
   $('#detailOverview').textContent = item.overview || '';
+  const quick = $('#detailMobileActions');
+  if (quick) {
+    const prog = itemProgress(item);
+    const status = prog && prog.ratio >= 0.95 ? 'Assistido' : (prog && prog.ratio > 0.02 ? `${Math.round(prog.ratio * 100)}% visto` : 'Minha lista');
+    quick.innerHTML = `
+      <button type="button" class="detail-quick-btn" data-action="folder">
+        <span class="detail-quick-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7h6l2 2h10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg></span>
+        <span>Pasta</span>
+      </button>
+      <button type="button" class="detail-quick-btn" data-action="identify">
+        <span class="detail-quick-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg></span>
+        <span>TMDB</span>
+      </button>
+      <button type="button" class="detail-quick-btn" data-action="status">
+        <span class="detail-quick-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 6 9 17l-5-5"/></svg></span>
+        <span>${status}</span>
+      </button>
+      <button type="button" class="detail-quick-btn" data-action="play">
+        <span class="detail-quick-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg></span>
+        <span>Assistir</span>
+      </button>
+    `;
+    quick.querySelector('[data-action="folder"]').onclick = () => window.api.openFolder(item.folder || item.path);
+    quick.querySelector('[data-action="identify"]').onclick = () => openSearchModal(item);
+    quick.querySelector('[data-action="play"]').onclick = () => playItem(item);
+  }
 
   // Big rating block (IMDb preferred). Computes best episode if we have
   // per-episode ratings, so the user sees the show's quality at a glance.
@@ -357,12 +454,19 @@ function renderEpisodeList(season) {
     const ratio = p && p.length ? Math.min(1, p.time / p.length) : 0;
     const li = document.createElement('li');
     li.className = 'episode';
+    const statusChip = ratio >= 0.95
+      ? '<span class="episode-status watched">Assistido</span>'
+      : (ratio > 0.02 ? '<span class="episode-status continue">Continuar</span>' : '');
     li.innerHTML = `
-      <div class="episode-num">${String(ep.index).padStart(2, '0')}</div>
+      <div class="episode-thumb"${episodeThumbFallbackStyle(state.currentDetail)}>
+        ${episodeThumbImg(ep)}
+        <div class="episode-num-overlay">${String(ep.episode || ep.index).padStart(2, '0')}</div>
+        ${statusChip}
+        ${ratio > 0 ? `<div class="episode-thumb-progress"><span style="width:${(ratio*100).toFixed(1)}%"></span></div>` : ''}
+      </div>
       <div>
         <p class="episode-title">${escapeHtml(ep.title)}</p>
         ${ep.overview ? `<p class="episode-overview">${escapeHtml(ep.overview)}</p>` : ''}
-        ${ratio > 0 ? `<div class="episode-progress"><span style="width:${(ratio * 100).toFixed(1)}%"></span></div>` : ''}
       </div>
       <div class="episode-meta">
         ${typeof ep.imdbRating === 'number' ? `<span class="episode-rating-big">★ ${ep.imdbRating.toFixed(1)}</span>` : ''}
@@ -372,6 +476,7 @@ function renderEpisodeList(season) {
     li.addEventListener('click', () => playFile(ep.path, state.currentDetail, ep));
     list.appendChild(li);
   }
+  hydrateEpisodeThumbs(list);
 }
 
 function closeDetail() {
@@ -555,7 +660,115 @@ async function playFile(filePath, item, episode) {
 // ---------- Embedded player ----------
 const player = {
   el: null, video: null, hideTimer: null, current: null, nextTimer: null, nextRemaining: 0,
+  locked: false, fitMode: 'contain', lastTap: 0, lastTapSide: null, singleTapTimer: null,
+  tapComboSide: null, tapComboTotal: 0, tapComboUntil: 0, tapComboTimer: null,
+  scrubbing: false,
+  intendedLandscape: false, orientationRetryTimer: null,
+  saveInFlight: null, pendingSave: null, lastSavedAt: 0,
 };
+
+function isMobileViewport() {
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '') || Math.min(window.innerWidth, window.innerHeight) <= 760;
+}
+
+function isPortraitViewport() {
+  return window.innerHeight > window.innerWidth;
+}
+
+function isPlayerOpen() {
+  return !!(player.el && !player.el.classList.contains('hidden') && player.current);
+}
+
+function isFullscreenActive() {
+  return !!(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement);
+}
+
+function syncPlayerViewportState() {
+  if (!player.el) return;
+  const shouldFallbackLandscape = isPlayerOpen()
+    && player.intendedLandscape
+    && isMobileViewport()
+    && isPortraitViewport()
+    && !isFullscreenActive();
+  player.el.classList.toggle('force-landscape', shouldFallbackLandscape);
+}
+
+function scheduleLandscapeRepair(reason = 'resume') {
+  if (!isPlayerOpen() || !player.intendedLandscape || !isMobileViewport()) return;
+  clearTimeout(player.orientationRetryTimer);
+  syncPlayerViewportState();
+  player.orientationRetryTimer = setTimeout(async () => {
+    syncPlayerViewportState();
+    if (document.visibilityState === 'hidden') return;
+    const v = player.video;
+    if (v && !v.paused) await tryAutoLandscape(v, { force: true, reason });
+    syncPlayerViewportState();
+  }, 260);
+}
+
+function absolutePlayerTime() {
+  const v = player.video;
+  const cur = player.current;
+  if (!v || !cur) return { time: 0, length: 0 };
+  const length = cur.duration || v.duration || 0;
+  const time = (cur.virtualOffset || 0) + (v.currentTime || 0);
+  return { time, length };
+}
+
+async function flushProgressSave(payload) {
+  if (!payload || !payload.filePath || !payload.length || payload.time < 0) return;
+  // Atualiza estado local imediatamente para a UI não “esquecer” entre saves.
+  state.progress[payload.filePath] = {
+    time: payload.time,
+    length: payload.length,
+    updatedAt: payload.updatedAt || Date.now(),
+  };
+  await window.api.saveProgress(payload.filePath, payload.time, payload.length, payload.updatedAt);
+}
+
+function queueProgressSave({ force = false, reason = 'tick' } = {}) {
+  const cur = player.current;
+  if (!cur || !cur.filePath || cur._suspendProgressSave) return Promise.resolve();
+  const { time, length } = absolutePlayerTime();
+  if (!length || !Number.isFinite(time) || time < 0) return Promise.resolve();
+  // Evita que o primeiro timeupdate em 0s durante resume de MP4 sobrescreva
+  // um episódio que estava quase no fim.
+  if (!force && cur._resumeTarget && time < Math.max(5, cur._resumeTarget - 8)) return Promise.resolve();
+  const now = Date.now();
+  if (!force && now - player.lastSavedAt < 3500) return player.saveInFlight || Promise.resolve();
+  player.lastSavedAt = now;
+  const payload = { filePath: cur.filePath, time, length, reason, updatedAt: now };
+  player.pendingSave = payload;
+  if (player.saveInFlight) return player.saveInFlight;
+  player.saveInFlight = (async () => {
+    while (player.pendingSave) {
+      const next = player.pendingSave;
+      player.pendingSave = null;
+      try { await flushProgressSave(next); } catch (e) { console.warn('save progress failed', e); }
+    }
+  })().finally(() => { player.saveInFlight = null; });
+  return player.saveInFlight;
+}
+
+function saveProgressBeacon(reason = 'pagehide') {
+  const cur = player.current;
+  if (!cur || cur._suspendProgressSave) return;
+  const { time, length } = absolutePlayerTime();
+  if (!length || time <= 0) return;
+  state.progress[cur.filePath] = { time, length, updatedAt: Date.now() };
+  try {
+    if (!/^https?:$/i.test(window.location.protocol)) return;
+    const base = window.location.pathname.startsWith('/mediaflix') ? '/mediaflix' : '';
+    const profileId = window.api.getCurrentProfileId ? window.api.getCurrentProfileId() : 'default';
+    const body = JSON.stringify({ path: cur.filePath, time, length, profileId, reason, updatedAt: Date.now() });
+    const url = `${base}/api/progress`;
+    if (navigator.sendBeacon) {
+      const blob = new Blob([body], { type: 'application/json' });
+      if (navigator.sendBeacon(url, blob)) return;
+    }
+    fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }).catch(()=>{});
+  } catch {}
+}
 
 function langCodeLabel(code) {
   const map = { 'pt': 'Português', 'pt-br': 'Português (BR)', 'por': 'Português',
@@ -609,6 +822,84 @@ function fmtTime(sec) {
   return `${m}:${String(s).padStart(2,'0')}`;
 }
 
+function seekPlayerBy(delta) {
+  const cur = player.current; const v = player.video;
+  if (!v) return;
+  if (cur && cur.isNative) {
+    v.currentTime = Math.max(0, Math.min(v.duration || cur.duration || 0, v.currentTime + delta));
+    queueProgressSave({ force: true, reason: 'skip' });
+    return;
+  }
+  if (cur && cur.duration) {
+    const target = Math.max(0, Math.min(cur.duration, (cur.virtualOffset || 0) + v.currentTime + delta));
+    loadStream(target);
+  } else {
+    v.currentTime = Math.max(0, Math.min(v.duration || 0, v.currentTime + delta));
+    queueProgressSave({ force: true, reason: 'skip' });
+  }
+}
+
+function seekPlayerTo(target) {
+  const cur = player.current; const v = player.video;
+  if (!v) return;
+  const total = (cur && cur.duration) || v.duration || 0;
+  const safeTarget = Math.max(0, Math.min(total || 0, Number(target) || 0));
+  if (!total) return;
+  if (cur && cur.isNative) {
+    try { v.currentTime = safeTarget; } catch {}
+  } else if (cur) {
+    loadStream(safeTarget);
+  } else {
+    v.currentTime = safeTarget;
+  }
+  queueProgressSave({ force: true, reason: 'scrub' });
+}
+
+function showTapFeedback(side, seconds) {
+  const fb = document.getElementById('playerTapFeedback');
+  if (!fb) return;
+  fb.className = `player-tap-feedback ${side === 'left' ? 'rewind' : 'forward'}`;
+  fb.textContent = `${side === 'left' ? '−' : '+'}${seconds}s`;
+  clearTimeout(showTapFeedback._t);
+  showTapFeedback._t = setTimeout(() => fb.classList.add('hidden'), 620);
+}
+
+function resetTapComboSoon() {
+  clearTimeout(player.tapComboTimer);
+  player.tapComboTimer = setTimeout(() => {
+    player.tapComboSide = null;
+    player.tapComboTotal = 0;
+    player.tapComboUntil = 0;
+  }, 760);
+}
+
+function setPlayerLocked(locked) {
+  player.locked = !!locked;
+  player.el?.classList.toggle('locked', player.locked);
+  const float = document.getElementById('playerLockFloat');
+  clearTimeout(player.lockTimer);
+  if (!player.locked) {
+    if (float) float.classList.add('hidden');
+    return;
+  }
+  player.el?.classList.add('hide-chrome');
+  showLockFloat();
+}
+
+function showLockFloat() {
+  const float = document.getElementById('playerLockFloat');
+  if (!float || !player.locked) return;
+  float.classList.remove('hidden');
+  clearTimeout(player.lockTimer);
+  player.lockTimer = setTimeout(() => float.classList.add('hidden'), 2400);
+}
+
+function togglePlayerFit() {
+  player.fitMode = player.fitMode === 'cover' ? 'contain' : 'cover';
+  player.el?.classList.toggle('fit-cover', player.fitMode === 'cover');
+  showToast(player.fitMode === 'cover' ? 'Preenchendo tela' : 'Ajustado sem cortar');
+}
+
 function ensurePlayerInit() {
   if (player.el) return;
   player.el = document.getElementById('player');
@@ -616,71 +907,182 @@ function ensurePlayerInit() {
 
   const v = player.video;
   const playBtn = document.getElementById('playerPlayBtn');
-  const playIcon = document.getElementById('playerPlayIcon');
-  const pauseIcon = document.getElementById('playerPauseIcon');
   const timeEl = document.getElementById('playerTime');
   const fill = document.getElementById('playerProgressFill');
+  const progressBuffer = document.getElementById('playerProgressBuffer');
+  const progressThumb = document.getElementById('playerProgressThumb');
+  const progressPreview = document.getElementById('playerProgressPreview');
   const progEl = document.getElementById('playerProgress');
   const muteBtn = document.getElementById('playerMuteBtn');
   const volRange = document.getElementById('playerVol');
   const fsBtn = document.getElementById('playerFsBtn');
+  const fitBtn = document.getElementById('playerFitBtn');
+  const lockBtn = document.getElementById('playerLockBtn');
+  const lockFloat = document.getElementById('playerLockFloat');
   const back10 = document.getElementById('playerBack10');
   const fwd10 = document.getElementById('playerFwd10');
   const subsBtn = document.getElementById('playerSubsBtn');
   const subsMenu = document.getElementById('playerSubsMenu');
 
   const showChrome = () => {
+    if (player.locked) return;
     player.el.classList.remove('hide-chrome');
     clearTimeout(player.hideTimer);
     player.hideTimer = setTimeout(() => {
       const vv = player.video;
       if (vv && !vv.paused) player.el.classList.add('hide-chrome');
-    }, 2500);
+    }, 3500);
   };
-  player.el.addEventListener('mousemove', showChrome);
-  // Tambem oculta automaticamente quando o video comeca a tocar (caso o usuario
-  // nao mexa o mouse). Reanexado para o video clonado em bindVideoListeners.
+  // Toque único alterna controles. Duplo toque: esquerda volta, direita avança.
+  const SELECTORS_INTERACTIVE = '.player-btn, .player-center-btn, .player-eps, .player-progress, .player-top > *, .player-bottom, .player-skip-btn, .player-next-card, .player-vol, .player-subs-menu, .player-subs-wrap, input, select, button';
+  const onPlayerTap = (e) => {
+    if (e.target.closest(SELECTORS_INTERACTIVE)) return;
+    if (player.locked) { showLockFloat(); return; }
+    const now = Date.now();
+    const x = (e.clientX || (e.touches && e.touches[0] && e.touches[0].clientX) || window.innerWidth / 2);
+    const side = x < window.innerWidth / 2 ? 'left' : 'right';
+    const sec = Math.max(3, Math.min(30, Number(player.current?.doubleTapSeconds || 5)));
+    if (now < player.tapComboUntil && player.tapComboSide === side) {
+      clearTimeout(player.singleTapTimer);
+      seekPlayerBy(side === 'left' ? -sec : sec);
+      player.tapComboTotal += sec;
+      player.tapComboUntil = now + 680;
+      showTapFeedback(side, player.tapComboTotal);
+      resetTapComboSoon();
+      return;
+    }
+    if (now - player.lastTap < 280 && player.lastTapSide === side) {
+      clearTimeout(player.singleTapTimer);
+      seekPlayerBy(side === 'left' ? -sec : sec);
+      player.tapComboSide = side;
+      player.tapComboTotal = sec;
+      player.tapComboUntil = now + 680;
+      showTapFeedback(side, player.tapComboTotal);
+      resetTapComboSoon();
+      player.lastTap = 0;
+      return;
+    }
+    player.lastTap = now;
+    player.lastTapSide = side;
+    clearTimeout(player.singleTapTimer);
+    player.singleTapTimer = setTimeout(() => {
+      // Toque único só mostra/renova os controles; eles somem depois do timer.
+      // Não escondemos instantaneamente, porque isso atrapalha no mobile.
+      showChrome();
+    }, 290);
+  };
+  player.el.addEventListener('mousemove', () => { if (!player.locked) showChrome(); });
+  player.el.addEventListener('click', onPlayerTap);
   player.onPlayHide = showChrome;
 
   playBtn.onclick = () => { const vv = player.video; vv.paused ? vv.play() : vv.pause(); };
+  const centerBtn = document.getElementById('playerCenterBtn');
+  if (centerBtn) {
+    centerBtn.onclick = (e) => {
+      e.stopPropagation();
+      const vv = player.video;
+      vv.paused ? vv.play() : vv.pause();
+      showChrome();
+    };
+  }
   bindVideoListeners(v);
 
-  progEl.onclick = (e) => {
+  const seekTargetFromEvent = (e) => {
+    const cur = player.current; const v = player.video;
+    const total = (cur && cur.duration) || v.duration || 0;
+    if (!total) return 0;
+    const r = progEl.getBoundingClientRect();
+    const x = Math.max(0, Math.min(r.width, (e.clientX || 0) - r.left));
+    return (x / Math.max(1, r.width)) * total;
+  };
+  const updateProgressPreview = (e) => {
+    const cur = player.current; const v = player.video;
+    const total = (cur && cur.duration) || v.duration || 0;
+    if (!total || !progressPreview) return;
+    const r = progEl.getBoundingClientRect();
+    const x = Math.max(0, Math.min(r.width, (e.clientX || 0) - r.left));
+    const target = (x / Math.max(1, r.width)) * total;
+    progressPreview.textContent = fmtTime(target);
+    progressPreview.style.left = `${x}px`;
+    progressPreview.classList.remove('hidden');
+  };
+  const updateScrubVisual = (e) => {
     const cur = player.current; const v = player.video;
     const total = (cur && cur.duration) || v.duration || 0;
     if (!total) return;
-    const r = progEl.getBoundingClientRect();
-    const target = ((e.clientX - r.left) / r.width) * total;
-    if (cur) {
-      // Seek server-side: recarrega o stream a partir do ponto
-      loadStream(target);
-    } else {
-      v.currentTime = target;
+    const target = seekTargetFromEvent(e);
+    const pct = Math.max(0, Math.min(100, (target / total) * 100));
+    fill.style.width = `${pct}%`;
+    if (progressThumb) progressThumb.style.left = `${pct}%`;
+    updateProgressPreview(e);
+  };
+  progEl.addEventListener('pointerenter', updateProgressPreview);
+  progEl.addEventListener('pointermove', (e) => {
+    if (player.scrubbing) updateScrubVisual(e);
+    else updateProgressPreview(e);
+  });
+  progEl.addEventListener('pointerleave', () => {
+    if (!player.scrubbing && progressPreview) progressPreview.classList.add('hidden');
+  });
+  progEl.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    player.scrubbing = true;
+    progEl.classList.add('scrubbing');
+    try { progEl.setPointerCapture(e.pointerId); } catch {}
+    updateScrubVisual(e);
+    showChrome();
+  });
+  progEl.addEventListener('pointerup', (e) => {
+    if (!player.scrubbing) return;
+    e.preventDefault();
+    const target = seekTargetFromEvent(e);
+    player.scrubbing = false;
+    progEl.classList.remove('scrubbing');
+    if (progressPreview) progressPreview.classList.add('hidden');
+    seekPlayerTo(target);
+    showChrome();
+  });
+  progEl.addEventListener('pointercancel', () => {
+    player.scrubbing = false;
+    progEl.classList.remove('scrubbing');
+    if (progressPreview) progressPreview.classList.add('hidden');
+  });
+  const updateBuffered = () => {
+    const v = player.video;
+    const cur = player.current;
+    const total = (cur && cur.duration) || v.duration || 0;
+    if (!progressBuffer || !total || !v.buffered || !v.buffered.length) return;
+    try {
+      const end = v.buffered.end(v.buffered.length - 1) + ((cur && cur.virtualOffset) || 0);
+      progressBuffer.style.width = `${Math.max(0, Math.min(100, (end / total) * 100))}%`;
+    } catch {
+      progressBuffer.style.width = '0%';
     }
   };
+  v.addEventListener('progress', updateBuffered);
+  v.addEventListener('loadedmetadata', updateBuffered);
 
-  back10.onclick = () => {
-    const cur = player.current; const v = player.video;
-    if (cur && cur.duration) {
-      const target = Math.max(0, (cur.virtualOffset || 0) + v.currentTime - 10);
-      loadStream(target);
-    } else { v.currentTime = Math.max(0, v.currentTime - 10); }
-  };
-  fwd10.onclick = () => {
-    const cur = player.current; const v = player.video;
-    if (cur && cur.duration) {
-      const target = Math.min(cur.duration, (cur.virtualOffset || 0) + v.currentTime + 10);
-      loadStream(target);
-    } else { v.currentTime = Math.min(v.duration || 0, v.currentTime + 10); }
-  };
+  back10.onclick = () => seekPlayerBy(-10);
+  fwd10.onclick = () => seekPlayerBy(10);
 
   muteBtn.onclick = () => { const v = player.video; v.muted = !v.muted; volRange.value = v.muted ? 0 : v.volume; };
   volRange.oninput = () => { const v = player.video; v.volume = parseFloat(volRange.value); v.muted = v.volume === 0; };
 
   fsBtn.onclick = () => {
-    if (document.fullscreenElement) document.exitFullscreen();
-    else player.el.requestFullscreen();
+    if (document.fullscreenElement) {
+      player.intendedLandscape = false;
+      player.el.classList.remove('force-landscape');
+      document.exitFullscreen();
+    }
+    else {
+      player.intendedLandscape = isMobileViewport();
+      player.el.requestFullscreen();
+      scheduleLandscapeRepair('manual-fullscreen');
+    }
   };
+  if (fitBtn) fitBtn.onclick = togglePlayerFit;
+  if (lockBtn) lockBtn.onclick = () => setPlayerLocked(true);
+  if (lockFloat) lockFloat.onclick = (e) => { e.stopPropagation(); setPlayerLocked(false); showChrome(); };
 
   subsBtn.onclick = (e) => { e.stopPropagation(); subsMenu.classList.toggle('hidden'); document.getElementById('playerAudioMenu')?.classList.add('hidden'); };
   document.addEventListener('click', (e) => {
@@ -699,6 +1101,8 @@ function ensurePlayerInit() {
 
   document.getElementById('playerClose').onclick = () => closeEmbeddedPlayer();
 
+  setupChromecast();
+
   // Keyboard
   document.addEventListener('keydown', (e) => {
     if (player.el.classList.contains('hidden')) return;
@@ -712,7 +1116,14 @@ function ensurePlayerInit() {
     else if (e.key === 'f' || e.key === 'F') { fsBtn.click(); }
     else if (e.key === 'm' || e.key === 'M') { muteBtn.click(); }
     else if (e.key === 'c' || e.key === 'C') { subsMenu.classList.toggle('hidden'); }
-    else if (e.key === 'Escape') { if (document.fullscreenElement) document.exitFullscreen(); else closeEmbeddedPlayer(); }
+    else if (e.key === 'e' || e.key === 'E') { const eb = document.getElementById('playerEpisodesBtn'); if (eb && eb.style.display !== 'none') eb.click(); }
+    else if (e.key === 'Escape') {
+      if (document.fullscreenElement) {
+        player.intendedLandscape = false;
+        player.el.classList.remove('force-landscape');
+        document.exitFullscreen();
+      } else closeEmbeddedPlayer();
+    }
   });
 
 }
@@ -720,35 +1131,44 @@ function ensurePlayerInit() {
 // Listeners ligados diretamente ao <video>. Extraido pra poder reanexar
 // quando clonamos o elemento em resetVideoElement.
 function bindVideoListeners(v) {
-  const playIcon = document.getElementById('playerPlayIcon');
-  const pauseIcon = document.getElementById('playerPauseIcon');
+  const playPath = document.getElementById('playerPlayPath');
+  const centerPath = document.getElementById('playerCenterPath');
+  const PATH_PLAY = 'M6 4l14 8-14 8z';
+  const PATH_PAUSE = 'M6 4h4v16H6zM14 4h4v16h-4z';
   const timeEl = document.getElementById('playerTime');
   const fill = document.getElementById('playerProgressFill');
   v.addEventListener('play', () => {
-    playIcon.hidden = true; pauseIcon.hidden = false;
+    if (playPath) playPath.setAttribute('d', PATH_PAUSE);
+    if (centerPath) centerPath.setAttribute('d', PATH_PAUSE);
     if (player.onPlayHide) player.onPlayHide();
+    if (!player.autoFsTriggered) {
+      player.autoFsTriggered = true;
+      tryAutoLandscape(v);
+    }
   });
   v.addEventListener('pause', () => {
-    playIcon.hidden = false; pauseIcon.hidden = true;
+    if (playPath) playPath.setAttribute('d', PATH_PLAY);
+    if (centerPath) centerPath.setAttribute('d', PATH_PLAY);
     player.el && player.el.classList.remove('hide-chrome');
     clearTimeout(player.hideTimer);
   });
-  v.addEventListener('click', () => v.paused ? v.play() : v.pause());
+  // Click no <video> ja eh tratado no container .player via touchstart/mousemove.
+  // NAO togglar play/pause aqui — apenas o botao central faz isso.
   v.addEventListener('timeupdate', () => {
     const total = (player.current && player.current.duration) || v.duration || 0;
     const cur = (player.current ? (player.current.virtualOffset || 0) : 0) + v.currentTime;
-    if (total) fill.style.width = (cur / total * 100) + '%';
+    if (total && !player.scrubbing) {
+      const pct = Math.max(0, Math.min(100, cur / total * 100));
+      fill.style.width = pct + '%';
+      const thumb = document.getElementById('playerProgressThumb');
+      if (thumb) thumb.style.left = pct + '%';
+    }
     timeEl.textContent = `${fmtTime(cur)} / ${fmtTime(total)}`;
   });
-  let lastSave = 0;
   v.addEventListener('timeupdate', () => {
-    const now = Date.now();
     const total = (player.current && player.current.duration) || v.duration || 0;
     const cur = (player.current ? (player.current.virtualOffset || 0) : 0) + v.currentTime;
-    if (now - lastSave > 4000 && total && player.current) {
-      lastSave = now;
-      window.api.saveProgress(player.current.filePath, cur, total);
-    }
+    queueProgressSave({ reason: 'timeupdate' });
     // Auto-next baseado em duracao real (ffprobe). O evento 'ended' eh
     // pouco confiavel no streaming chunked porque o ffmpeg fecha o pipe
     // mas o <video> nem sempre dispara ended. Disparamos quando faltam
@@ -773,6 +1193,8 @@ function bindVideoListeners(v) {
     detectSkippableChapter(cur);
   });
   v.addEventListener('ended', () => onPlaybackEnded());
+  v.addEventListener('pause', () => queueProgressSave({ force: true, reason: 'pause' }));
+  v.addEventListener('seeking', () => queueProgressSave({ force: true, reason: 'seeking' }));
   v.addEventListener('error', () => {
     const err = v.error;
     const codeMap = { 1: 'aborted', 2: 'rede', 3: 'decode', 4: 'formato/origem nao suportado' };
@@ -784,15 +1206,41 @@ function bindVideoListeners(v) {
   v.addEventListener('waiting', () => console.log('player waiting buffer'));
 }
 
+// Auto-fullscreen + landscape lock no estilo Netflix.
+// IMPORTANTE: NAO usamos webkitEnterFullscreen do <video> no iOS porque
+// ele substitui nossa UI inteira pelos controles nativos da Apple (e ai
+// o botao central nem aparece). Em vez disso, fullscreen do CONTAINER
+// usa nossa UI e em Android consegue lock de orientacao.
+async function tryAutoLandscape(v, opts = {}) {
+  try {
+    if (!isMobileViewport()) return;
+    player.intendedLandscape = true;
+    syncPlayerViewportState();
+    const el = player.el || v;
+    const req = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen || el.msRequestFullscreen;
+    if (req && (opts.force || !isFullscreenActive())) {
+      try { await req.call(el); } catch {}
+    }
+    if (screen.orientation && screen.orientation.lock) {
+      try { await screen.orientation.lock('landscape'); } catch {}
+    }
+    syncPlayerViewportState();
+  } catch {}
+}
+
 // Substitui o <video> por um clone novo. HTML5 mantem entradas em
 // videoEl.textTracks mesmo apos remover os <track> filhos — unica forma de
-// resetar e trocar o elemento.
 function resetVideoElement() {
   if (!player.video) return;
   const old = player.video;
   const fresh = old.cloneNode(false); // sem filhos (sem <source>/<track> antigos)
   fresh.removeAttribute('src');
   fresh.controls = false;
+  // Garante que o player nao saia pro fullscreen nativo do iOS/Android, que
+  // esconderia a UI custom (incl. botao "Pular abertura").
+  fresh.setAttribute('playsinline', '');
+  fresh.setAttribute('webkit-playsinline', 'true');
+  fresh.setAttribute('x5-playsinline', 'true');
   old.replaceWith(fresh);
   player.video = fresh;
   bindVideoListeners(fresh);
@@ -890,19 +1338,203 @@ function applySubTracks() {
   }, 50);
 }
 
+// ---------- Chromecast ----------
+// Usa o Google Cast SDK (carregado em index.html). Funciona em Chrome desktop
+// + Android Chrome. iOS Safari nao suporta nativo.
+// IMPORTANTE: requer HTTPS + URL publica do video. Como o servidor roda em
+// gamingflix.space (HTTPS), basta resolver a baseUrl pra absoluta.
+let castInitialized = false;
+function setupChromecast() {
+  const btn = document.getElementById('playerCastBtn');
+  if (!btn) return;
+  window.__onGCastApiAvailable = (isAvailable) => {
+    if (!isAvailable) return;
+    try {
+      cast.framework.CastContext.getInstance().setOptions({
+        receiverApplicationId: chrome.cast.media.DEFAULT_MEDIA_RECEIVER_APP_ID,
+        autoJoinPolicy: chrome.cast.AutoJoinPolicy.ORIGIN_SCOPED,
+      });
+      castInitialized = true;
+      btn.style.display = '';
+      console.log('[cast] SDK pronto');
+    } catch (e) { console.warn('[cast] init err', e.message); }
+  };
+  // Se SDK ja carregou antes (re-bind), checa
+  if (window.cast && window.cast.framework) window.__onGCastApiAvailable(true);
+
+  btn.onclick = async () => {
+    if (!castInitialized) { alert('Chromecast não disponível neste navegador.'); return; }
+    try {
+      const ctx = cast.framework.CastContext.getInstance();
+      await ctx.requestSession();
+      castCurrentMedia();
+    } catch (e) {
+      if (String(e).includes('cancel')) return;
+      console.warn('[cast] requestSession', e);
+      alert('Falha ao conectar ao Chromecast: ' + (e.code || e.message || e));
+    }
+  };
+}
+
+function castCurrentMedia() {
+  const cur = player.current;
+  if (!cur || !cur.baseUrl) return;
+  const ctx = cast.framework.CastContext.getInstance();
+  const session = ctx.getCurrentSession();
+  if (!session) return;
+  // Resolve URL relativa pra absoluta
+  const absUrl = new URL(cur.baseUrl, window.location.href).href;
+  const ext = (cur.filePath.match(/\.([^./\\]+)$/) || [, ''])[1].toLowerCase();
+  const mime = ext === 'webm' ? 'video/webm' : 'video/mp4';
+  const mediaInfo = new chrome.cast.media.MediaInfo(absUrl, mime);
+  mediaInfo.metadata = new chrome.cast.media.GenericMediaMetadata();
+  mediaInfo.metadata.title = (cur.item && cur.item.title) || 'MediaFlix';
+  if (cur.episode) {
+    mediaInfo.metadata.subtitle = `T${cur.episode.season} · E${cur.episode.episode}${cur.episode.title ? ' — ' + cur.episode.title : ''}`;
+  }
+  if (cur.item && cur.item.poster) {
+    mediaInfo.metadata.images = [new chrome.cast.Image(cur.item.poster)];
+  }
+  const request = new chrome.cast.media.LoadRequest(mediaInfo);
+  request.currentTime = player.video.currentTime || 0;
+  session.loadMedia(request).then(
+    () => { player.video.pause(); console.log('[cast] tocando no TV'); },
+    (err) => { console.warn('[cast] loadMedia err', err); alert('Não consegui carregar no Chromecast.'); }
+  );
+}
+
+// ---------- Painel lateral de Episódios (estilo Netflix) ----------
+function setupEpisodesPanel(item, currentEp) {
+  const btn = document.getElementById('playerEpisodesBtn');
+  const panel = document.getElementById('playerEps');
+  const closeBtn = document.getElementById('playerEpsClose');
+  const seasonSelect = document.getElementById('playerEpsSeason');
+  const list = document.getElementById('playerEpsList');
+  if (!btn || !panel) return;
+  // Só faz sentido pra séries (que tem episódios em multiplas temporadas).
+  const seasons = (item && item.seasons) || [];
+  const hasMulti = seasons.length > 0 && seasons.some((s) => (s.episodes || []).length > 0);
+  if (!hasMulti) { btn.style.display = 'none'; panel.classList.add('hidden'); return; }
+  btn.style.display = '';
+
+  let currentSeasonIdx = seasons.findIndex((s) => s.season === (currentEp && currentEp.season));
+  if (currentSeasonIdx < 0) currentSeasonIdx = 0;
+
+  seasonSelect.innerHTML = seasons.map((s, i) => {
+    const num = s.season === 0 ? 'Especiais' : `Temporada ${s.season}`;
+    return `<option value="${i}" ${i === currentSeasonIdx ? 'selected' : ''}>${num} · ${(s.episodes || []).length} eps</option>`;
+  }).join('');
+
+  function renderList(idx) {
+    const season = seasons[idx]; if (!season) return;
+    list.innerHTML = '';
+    for (const ep of (season.episodes || [])) {
+      const epNum = ep.episode || ep.index || 0;
+      const isActive = currentEp && currentEp.path === ep.path;
+      const p = state.progress && state.progress[ep.path];
+      const ratio = (p && p.length) ? Math.min(1, p.time / p.length) : 0;
+      const dur = (ep.runtime ? ep.runtime + ' min' : (p && p.length ? fmtTime(p.length) : ''));
+      const div = document.createElement('div');
+      div.className = 'player-eps-item' + (isActive ? ' active' : '');
+      div.innerHTML = `
+        <div class="player-eps-thumb"${episodeThumbFallbackStyle(item)}>
+          ${episodeThumbImg(ep)}
+          <div class="play-overlay"><svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg></div>
+          ${ratio > 0 ? `<div class="progress-bar"><div class="progress-fill" style="width:${(ratio*100).toFixed(1)}%"></div></div>` : ''}
+        </div>
+        <div class="player-eps-info">
+          <div class="player-eps-head-row">
+            <span class="player-eps-num">${epNum}.</span>
+            <span class="player-eps-name">${escapeHtml(ep.title || 'Episódio ' + epNum)}</span>
+            ${dur ? `<span class="player-eps-dur">${dur}</span>` : ''}
+          </div>
+          ${ep.overview ? `<div class="player-eps-desc">${escapeHtml(ep.overview)}</div>` : ''}
+        </div>`;
+      div.addEventListener('click', () => {
+        panel.classList.add('hidden');
+        closeEmbeddedPlayer();
+        playFile(ep.path, item, ep);
+      });
+      list.appendChild(div);
+    }
+    hydrateEpisodeThumbs(list);
+  }
+  renderList(currentSeasonIdx);
+  // Auto-scroll pro episodio atual
+  setTimeout(() => {
+    const active = list.querySelector('.player-eps-item.active');
+    if (active) active.scrollIntoView({ block: 'center' });
+  }, 100);
+
+  seasonSelect.onchange = () => renderList(parseInt(seasonSelect.value, 10));
+  btn.onclick = (e) => { e.stopPropagation(); panel.classList.toggle('hidden'); };
+  closeBtn.onclick = (e) => { e.stopPropagation(); panel.classList.add('hidden'); };
+}
+
+async function updatePlayerSeriesHud(item, episode) {
+  const hud = document.getElementById('playerSeriesHud');
+  if (!hud) return;
+  if (!item || !episode) { hud.classList.add('hidden'); return; }
+  hud.classList.remove('hidden');
+  document.getElementById('playerSeriesName').textContent = episode.title || item.title || 'Episódio';
+  document.getElementById('playerSeriesKicker').textContent = item.title || 'SÉRIE';
+  const parts = [];
+  if (episode.season != null) parts.push(`Temporada ${episode.season}`);
+  if (episode.episode != null) parts.push(`Episódio ${episode.episode}`);
+  if (episode.airDate) parts.push(String(episode.airDate).slice(0, 4));
+  if (typeof episode.imdbRating === 'number') parts.push(`★ ${episode.imdbRating.toFixed(1)}`);
+  document.getElementById('playerSeriesMeta').textContent = parts.join(' · ');
+
+  const poster = document.getElementById('playerSeriesPoster');
+  if (poster) {
+    poster.style.backgroundImage = '';
+    let bg = null;
+    if (episode.stillPath) bg = `https://image.tmdb.org/t/p/w500${episode.stillPath}`;
+    else if (item.poster || item.banner) bg = await loadImage(item.poster || item.banner).catch(() => null);
+    if (bg) poster.style.backgroundImage = `url('${bg}')`;
+  }
+}
+
 async function openEmbeddedPlayer({ url, filePath, item, episode, autoNext, autoNextSeconds }) {
   ensurePlayerInit();
   // Reset total do <video>: HTML5 nao remove textTracks da colecao mesmo
   // depois de remover <track>. Clonar o elemento descarta tudo (legendas
   // anteriores nao "vazam" pro proximo episodio/serie).
   resetVideoElement();
+  setPlayerLocked(false);
   // Probe pra duracao real + lista de faixas de audio + idioma preferido
-  const probe = await window.api.probe(filePath).catch(() => ({ duration: 0, audio: [], preferred: 0 }));
-  player.current = { filePath, item, episode, autoNext, autoNextSeconds, baseUrl: url, audioIdx: probe.preferred || 0, audioTracks: probe.audio || [], duration: probe.duration || 0, virtualOffset: 0, activeSubIdx: -1, chapters: probe.chapters || [], skipDismissed: {} };
-  console.log('[player] chapters:', probe.chapters);
+  const [probe, cfg] = await Promise.all([
+    window.api.probe(filePath).catch(() => ({ duration: 0, audio: [], preferred: 0 })),
+    window.api.getConfig().catch(() => ({})),
+  ]);
+  // Arquivos "nativos" (mp4/webm/m4v/mov) sao servidos via range pelo
+  // servidor — `&ss=` na URL eh ignorado. Pra esses, fazemos seek client-side
+  // via v.currentTime e NAO usamos virtualOffset (senao a contagem de tempo,
+  // chapters e auto-next ficam dessincronizados com o video real).
+  const ext = (filePath.match(/\.([^./\\]+)$/) || [, ''])[1].toLowerCase();
+  const isNative = ['mp4', 'webm', 'm4v', 'mov'].includes(ext);
+  player.current = {
+    filePath, item, episode, autoNext, autoNextSeconds, baseUrl: url,
+    audioIdx: probe.preferred || 0,
+    audioTracks: probe.audio || [],
+    duration: probe.duration || 0,
+    virtualOffset: 0,
+    activeSubIdx: -1,
+    chapters: probe.chapters || [],
+    skipDismissed: {},
+    isNative,
+    preferredAudioLang: probe.preferredAudioLang || 'pt',
+    preferredSubLang: probe.preferredSubLang || 'off',
+    skipIntroEnabled: probe.skipIntro !== false,
+    doubleTapSeconds: cfg.doubleTapSeconds || 5,
+  };
+  console.log('[player] chapters:', probe.chapters, 'isNative:', isNative, 'prefAudio:', probe.preferredAudioLang, 'prefSub:', probe.preferredSubLang);
   cancelAutoNext();
   cancelSkip();
   player.el.classList.remove('hidden', 'hide-chrome');
+  player.el.classList.toggle('is-series', !!episode);
+  setupEpisodesPanel(item, episode);
+  updatePlayerSeriesHud(item, episode);
 
   // Title
   document.getElementById('playerTitle').textContent = item ? item.title : '';
@@ -930,26 +1562,69 @@ async function openEmbeddedPlayer({ url, filePath, item, episode, autoNext, auto
   player.current.subs = subs;
   buildSubsMenu(subs);
 
+  // Auto-seleciona legenda no idioma preferido do usuario (config)
+  const prefSub = (player.current.preferredSubLang || 'off').toLowerCase();
+  if (prefSub !== 'off' && subs.length) {
+    const LANG_RE = {
+      pt: /^(pt|por|ptg|pob|prt)/i,
+      en: /^(en|eng)/i,
+      es: /^(es|spa|esp)/i,
+      ja: /^(ja|jpn)/i,
+      fr: /^(fr|fra|fre)/i,
+      it: /^(it|ita)/i,
+      de: /^(de|deu|ger)/i,
+      ko: /^(ko|kor)/i,
+      zh: /^(zh|zho|chi|cmn)/i,
+      ru: /^(ru|rus)/i,
+    };
+    const re = LANG_RE[prefSub];
+    if (re) {
+      const idx = subs.findIndex((s) => re.test(s.lang || '') || re.test(s.label || ''));
+      if (idx >= 0) {
+        try { await selectSub(idx); } catch (e) { console.warn('auto-select sub falhou:', e); }
+      }
+    }
+  }
+
   // Resume seek
   const savedProg = state.progress[filePath];
   let startSec = 0;
-  if (savedProg && savedProg.length && savedProg.time && savedProg.time / savedProg.length < 0.95) {
-    startSec = Math.max(0, savedProg.time - 3);
+  if (savedProg && savedProg.length && savedProg.time) {
+    const remain = savedProg.length - savedProg.time;
+    // Não jogar o usuário para o começo só porque ele parou nos créditos ou
+    // perto do fim. Só tratamos como finalizado de verdade nos últimos 10s.
+    if (remain > 10) startSec = Math.max(0, savedProg.time - 3);
   }
   await loadStream(startSec);
 }
 
-// Carrega/recarrega o <video> apontando pro stream com seek server-side (?ss=)
+// Carrega/recarrega o <video>. Para arquivos nativos (mp4/webm/m4v/mov), o
+// seek eh feito client-side via v.currentTime (range request) — `?ss=` na URL
+// nao funciona com range streaming. Para MKV/AVI/etc., usa transcoding com
+// seek server-side via `?ss=` + virtualOffset pra manter currentTime coerente.
 async function loadStream(seekSec) {
   const cur = player.current;
   if (!cur) return;
   const v = player.video;
+  await queueProgressSave({ force: true, reason: 'before-loadStream' });
   v.pause();
   while (v.firstChild) v.removeChild(v.firstChild);
   v.removeAttribute('src');
 
-  cur.virtualOffset = seekSec || 0;
-  const url = cur.baseUrl + (seekSec ? `&ss=${seekSec}` : '') + `&a=${cur.audioIdx}`;
+  const want = Math.max(0, Number(seekSec) || 0);
+  cur._resumeTarget = want;
+  cur._suspendProgressSave = true;
+
+  let url;
+  if (cur.isNative) {
+    // Native: nao seekamos server-side. virtualOffset fica 0; v.currentTime
+    // refletira o tempo real do arquivo.
+    cur.virtualOffset = 0;
+    url = cur.baseUrl + `&a=${cur.audioIdx}`;
+  } else {
+    cur.virtualOffset = want;
+    url = cur.baseUrl + (want ? `&ss=${want}` : '') + `&a=${cur.audioIdx}`;
+  }
 
   const src = document.createElement('source');
   src.src = url;
@@ -960,10 +1635,82 @@ async function loadStream(seekSec) {
   // ativa selecionada (se houver) — caso contrario fica desligada por padrao.
   applySubTracks();
 
+  // Track de capitulos: aparece no fullscreen nativo do iOS (Safari) e
+  // tambem alimenta features futuras do player custom.
+  applyChaptersTrack();
+
   v.load();
   v.addEventListener('loadedmetadata', () => {
+    if (cur.isNative && want > 0) {
+      try { v.currentTime = want; } catch {}
+    }
+    const enableSave = () => {
+      cur._suspendProgressSave = false;
+      setTimeout(() => { cur._resumeTarget = 0; }, 2500);
+      queueProgressSave({ force: true, reason: 'loadedmetadata' });
+    };
+    if (cur.isNative && want > 0) {
+      const onSeeked = () => enableSave();
+      v.addEventListener('seeked', onSeeked, { once: true });
+      setTimeout(() => { if (cur._suspendProgressSave) enableSave(); }, 1800);
+    } else {
+      enableSave();
+    }
     v.play().catch(()=>{});
   }, { once: true });
+}
+
+function applyChaptersTrack() {
+  const cur = player.current;
+  const v = player.video;
+  if (!cur || !v || !cur.chapters || !cur.chapters.length) return;
+  const vtt = buildChaptersVTT(cur.chapters);
+  if (!vtt) return;
+  const blob = new Blob([vtt], { type: 'text/vtt' });
+  const url = URL.createObjectURL(blob);
+  const t = document.createElement('track');
+  t.kind = 'chapters';
+  t.label = 'Capítulos';
+  t.srclang = 'pt';
+  t.default = true;
+  t.src = url;
+  v.appendChild(t);
+}
+
+function fmtVttTime(sec) {
+  const s = Math.max(0, Number(sec) || 0);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = (s % 60).toFixed(3).padStart(6, '0');
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${ss}`;
+}
+
+function humanChapterTitle(chap, idx, allChaps, totalDuration) {
+  const t = (chap.title || '').trim();
+  // Se o titulo ja eh semantico, usa
+  if (t && !/^\d{1,2}:\d{2}(:\d{2})?(\.\d+)?$/.test(t)) return t;
+  // Heuristica: nomeia conforme posicao/duracao
+  const dur = chap.end - chap.start;
+  if (chap.start < 360 && dur > 0 && dur <= 240 && idx === 0) return 'Abertura / Recap';
+  if (totalDuration && chap.start > totalDuration * 0.92 && dur <= 120) return 'Créditos';
+  return `Capítulo ${idx + 1}`;
+}
+
+function buildChaptersVTT(chapters) {
+  if (!chapters || !chapters.length) return '';
+  const cur = player.current;
+  const total = (cur && cur.duration) || chapters[chapters.length - 1].end || 0;
+  const lines = ['WEBVTT', ''];
+  chapters.forEach((c, i) => {
+    const start = fmtVttTime(c.start);
+    const end = fmtVttTime(c.end || (chapters[i + 1] ? chapters[i + 1].start : total));
+    const title = humanChapterTitle(c, i, chapters, total);
+    lines.push(String(i + 1));
+    lines.push(`${start} --> ${end}`);
+    lines.push(title);
+    lines.push('');
+  });
+  return lines.join('\n');
 }
 
 function buildAudioMenu(tracks, currentIdx) {
@@ -1000,18 +1747,23 @@ function closeEmbeddedPlayer() {
   const closingItem = player.current ? player.current.item : null;
   let savePromise = null;
   if (player.current) {
-    const total = player.current.duration || v.duration || 0;
-    const cur = (player.current.virtualOffset || 0) + (v.currentTime || 0);
-    if (total && cur > 0) {
-      savePromise = window.api.saveProgress(player.current.filePath, cur, total);
-    }
+    savePromise = queueProgressSave({ force: true, reason: 'close' });
     window.api.logClose(player.current.filePath);
   }
   v.pause();
   v.removeAttribute('src');
   v.load();
   player.el.classList.add('hidden');
+  const epsPanel = document.getElementById('playerEps');
+  if (epsPanel) epsPanel.classList.add('hidden');
   player.current = null;
+  player.lastSavedAt = 0;
+  player.intendedLandscape = false;
+  clearTimeout(player.orientationRetryTimer);
+  player.el.classList.remove('force-landscape');
+  player.autoFsTriggered = false;
+  // Libera orientation lock + sai do fullscreen
+  try { if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch {}
   if (document.fullscreenElement) document.exitFullscreen().catch(()=>{});
   // Refresh listas: aguarda o saveProgress terminar antes de reler do disco,
   // senao o estado em memoria fica defasado e a barra de "continuar" some.
@@ -1101,16 +1853,29 @@ function chapterSkipLabel(chap, allChaps, totalDuration) {
   for (const p of SKIP_PATTERNS) if (chap.title && p.re.test(chap.title)) return p.label;
   if (!allChaps || allChaps.length < 3) return null;
   const dur = chap.end - chap.start;
-  // Capitulo no comeco (primeiros 6 min) e curto (<= 4 min): recap/abertura
-  if (chap.start < 360 && dur > 0 && dur <= 240) return 'Pular abertura';
-  // Capitulo no final (ultimos 8% do filme) e curto (<=2min): creditos
-  if (totalDuration && chap.start > totalDuration * 0.92 && dur <= 120) return 'Pular cr\u00e9ditos';
+  if (!(dur > 0)) return null;
+  const idx = allChaps.indexOf(chap);
+  if (idx < 0) return null;
+  // duracao valida e finita (MKV transcoded as vezes da Infinity)
+  const total = (totalDuration && Number.isFinite(totalDuration) && totalDuration > 0) ? totalDuration : 0;
+  // Capitulo de abertura/recap: precisa estar ENTRE OS 2 PRIMEIROS, no comeco
+  // do video (<6 min), curto (<=4 min) e nao pode estar na segunda metade.
+  if (idx <= 1 && chap.start < 360 && dur <= 240) {
+    if (!total || chap.start < total * 0.4) return 'Pular abertura';
+  }
+  // Creditos: precisa ser um dos 2 ULTIMOS capitulos, perto do fim (>92%),
+  // curto (<=2 min). Exige totalDuration valido pra evitar falso positivo.
+  if (total && idx >= allChaps.length - 2 && chap.start > total * 0.92 && dur <= 120) {
+    return 'Pular cr\u00e9ditos';
+  }
   return null;
 }
 
 function detectSkippableChapter(absSec) {
   const cur = player.current;
   if (!cur || !cur.chapters || !cur.chapters.length) return;
+  // Toggle global: usuario pode desligar nas configs
+  if (cur.skipIntroEnabled === false) { hideSkipBtn(); return; }
   const chap = cur.chapters.find((c) => absSec >= c.start && absSec < c.end);
   if (!chap) { hideSkipBtn(); return; }
   const label = chapterSkipLabel(chap, cur.chapters, cur.duration);
@@ -1126,31 +1891,17 @@ function detectSkippableChapter(absSec) {
 function showSkipBtn(label, chap) {
   const btn = document.getElementById('playerSkipBtn');
   if (!btn) return;
-  // Ja visivel pra esse capitulo? nao reseta countdown
+  // Ja visivel pra esse capitulo? mantem
   if (btn.dataset.chapStart === String(chap.start) && !btn.classList.contains('hidden')) return;
   btn.dataset.chapStart = String(chap.start);
   btn.classList.remove('hidden');
   document.getElementById('playerSkipLabel').textContent = label;
-  // Countdown so dispara na primeira entrada do capitulo
-  const cur = player.current;
   const cdEl = document.getElementById('playerSkipCountdown');
-  if (cur && !cur.skipDismissed[chap.start]) {
-    let n = 8;
-    cdEl.textContent = `(${n}s)`;
-    if (player.skipTimer) clearInterval(player.skipTimer);
-    player.skipTimer = setInterval(() => {
-      n -= 1;
-      cdEl.textContent = `(${n}s)`;
-      if (n <= 0) {
-        if (player.skipTimer) { clearInterval(player.skipTimer); player.skipTimer = null; }
-        cdEl.textContent = '';
-        doSkip(chap);
-      }
-    }, 1000);
-    cur.skipDismissed[chap.start] = 'started';
-  } else {
-    cdEl.textContent = '';
-  }
+  if (cdEl) cdEl.textContent = '';
+  if (player.skipTimer) { clearInterval(player.skipTimer); player.skipTimer = null; }
+  // Auto-skip removido: a heuristica de capitulos do MKV pode errar
+  // (capitulos genericos sem nomes semanticos). Usuario precisa clicar
+  // manualmente — evita pular pra meio do episodio sem querer.
   btn.onclick = () => doSkip(chap);
 }
 
@@ -1159,6 +1910,10 @@ function doSkip(chap) {
   const cur = player.current;
   if (!cur) return;
   cur.skipDismissed[chap.start] = 'dismissed';
+  // Native: seek instantaneo via v.currentTime (evita reload do stream).
+  if (cur.isNative && player.video) {
+    try { player.video.currentTime = chap.end; player.video.play().catch(()=>{}); return; } catch {}
+  }
   // Pula pro fim do capitulo (com seek server-side)
   loadStream(chap.end);
 }
@@ -1243,6 +1998,20 @@ async function renderSettings() {
   wireToggle('autoRescanToggle', 'autoRescan');
   wireToggle('skipIntroToggle', 'skipIntro');
 
+  // Selects de idioma padrao (audio + legenda)
+  const wireLangSelect = (id, key, fallback) => {
+    const el = $('#' + id);
+    if (!el) return;
+    el.value = cfg[key] || fallback;
+    el.onchange = async () => {
+      await window.api.setString(key, el.value);
+      const label = el.options[el.selectedIndex] ? el.options[el.selectedIndex].text : el.value;
+      showToast(`Idioma salvo: ${label}`);
+    };
+  };
+  wireLangSelect('preferredAudioLangSelect', 'preferredAudioLang', 'pt');
+  wireLangSelect('preferredSubLangSelect', 'preferredSubLang', 'off');
+
   const secInput = $('#autoNextSecondsInput');
   if (secInput) {
     secInput.value = cfg.autoNextSeconds || 8;
@@ -1250,10 +2019,20 @@ async function renderSettings() {
       await window.api.setNumber('autoNextSeconds', secInput.value);
     };
   }
+  const doubleTapInput = $('#doubleTapSecondsInput');
+  if (doubleTapInput) {
+    doubleTapInput.value = cfg.doubleTapSeconds || 5;
+    doubleTapInput.onchange = async () => {
+      await window.api.setNumber('doubleTapSeconds', doubleTapInput.value);
+      showToast(`Duplo toque: ${doubleTapInput.value}s`);
+    };
+  }
 }
 
 // ---------- Routing ----------
 function route(name) {
+  document.body.classList.toggle('route-home', name === 'home');
+  document.body.classList.toggle('route-settings', name === 'settings');
   $$('.nav-link').forEach((b) => b.classList.toggle('active', b.dataset.route === name));
   const home = name === 'home';
   $('#hero').classList.toggle('hidden', !home);
@@ -1266,6 +2045,168 @@ function route(name) {
   else $('#empty').classList.add('hidden');
   $('#settings').classList.toggle('hidden', name !== 'settings');
   if (name === 'settings') renderSettings();
+}
+
+
+// ---------- Profiles (web / Netflix-style gate) ----------
+let profileSelectionResolve = null;
+function ensureProfilesUi() {
+  if (document.getElementById('profileGate')) return;
+  const gate = document.createElement('section');
+  gate.id = 'profileGate';
+  gate.className = 'profile-gate hidden';
+  gate.innerHTML = `
+    <div class="profile-shell">
+      <p class="profile-kicker">MEDIAFLIX</p>
+      <h1>Quem está assistindo?</h1>
+      <div class="profile-grid" id="profileGrid"></div>
+      <form class="profile-create" id="profileCreateForm">
+        <input id="profileNameInput" type="text" maxlength="32" placeholder="Novo perfil" autocomplete="off" />
+        <button type="submit">Adicionar</button>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(gate);
+
+  const switcher = document.createElement('button');
+  switcher.id = 'profileSwitcher';
+  switcher.className = 'profile-switcher hidden';
+  switcher.type = 'button';
+  switcher.title = 'Trocar perfil';
+  const actions = document.querySelector('.topbar-actions');
+  if (actions) actions.prepend(switcher);
+  switcher.addEventListener('click', () => openProfileGate(false));
+
+  document.getElementById('profileCreateForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = document.getElementById('profileNameInput');
+    const name = input.value.trim();
+    if (!name || !window.api.createProfile) return;
+    const res = await window.api.createProfile(name);
+    if (res && res.ok && res.profile) {
+      input.value = '';
+      state.profiles.push(res.profile);
+      renderProfileGrid();
+      showToast('Perfil criado');
+    }
+  });
+}
+
+function renderProfileGrid() {
+  const grid = document.getElementById('profileGrid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  for (const profile of state.profiles) {
+    const btn = document.createElement('button');
+    btn.className = 'profile-card';
+    btn.type = 'button';
+    btn.innerHTML = `
+      <span class="profile-avatar" style="--profile-color:${profile.color || '#e11d48'}">${escapeHtml(profile.avatar || (profile.name || 'P').slice(0,1).toUpperCase())}</span>
+      <span class="profile-name">${escapeHtml(profile.name || 'Perfil')}</span>
+    `;
+    btn.addEventListener('click', () => selectProfile(profile));
+    grid.appendChild(btn);
+  }
+}
+
+function updateProfileSwitcher() {
+  const btn = document.getElementById('profileSwitcher');
+  if (!btn || !state.currentProfile) return;
+  btn.classList.remove('hidden');
+  btn.innerHTML = `<span style="--profile-color:${state.currentProfile.color || '#e11d48'}">${escapeHtml(state.currentProfile.avatar || 'P')}</span><b>${escapeHtml(state.currentProfile.name || 'Perfil')}</b>`;
+}
+
+async function selectProfile(profile) {
+  if (!profile || !window.api.setCurrentProfile) return;
+  state.currentProfile = profile;
+  await window.api.setCurrentProfile(profile.id);
+  document.getElementById('profileGate')?.classList.add('hidden');
+  document.body.classList.remove('profile-locked');
+  updateProfileSwitcher();
+  state.progress = await window.api.getProgress();
+  state.history = await window.api.getHistory();
+  if (profileSelectionResolve) { profileSelectionResolve(profile); profileSelectionResolve = null; }
+  if (state.library && state.library.length) await renderAll();
+}
+
+function openProfileGate(required = false) {
+  ensureProfilesUi();
+  renderProfileGrid();
+  document.getElementById('profileGate').classList.remove('hidden');
+  if (required) document.body.classList.add('profile-locked');
+  setTimeout(() => document.getElementById('profileNameInput')?.focus(), 80);
+}
+
+async function ensureProfileSelected() {
+  if (!window.api.getProfiles) return;
+  ensureProfilesUi();
+  const res = await window.api.getProfiles();
+  state.profiles = (res && res.profiles) || [];
+  const saved = window.api.getCurrentProfileId ? window.api.getCurrentProfileId() : localStorage.getItem('mediaflix:profileId');
+  const current = state.profiles.find((p) => p.id === saved);
+  if (current) {
+    state.currentProfile = current;
+    await window.api.setCurrentProfile(current.id);
+    updateProfileSwitcher();
+    return;
+  }
+  openProfileGate(true);
+  await new Promise((resolve) => { profileSelectionResolve = resolve; });
+}
+
+
+
+async function ensureUploadToken() {
+  let token = localStorage.getItem('mediaflix:uploadToken') || '';
+  if (token) return token;
+  token = prompt('Token de upload do MediaFlix:') || '';
+  token = token.trim();
+  if (token) localStorage.setItem('mediaflix:uploadToken', token);
+  return token;
+}
+
+async function uploadSelectedFiles(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  if (!window.api.uploadFiles) { showToast('Upload web indisponível nesta versão'); return; }
+  const token = await ensureUploadToken();
+  if (!token) return;
+  const progress = document.getElementById('uploadProgress');
+  const status = document.getElementById('uploadStatus');
+  const bar = progress && progress.querySelector('span');
+  const totalSize = files.reduce((sum, file) => sum + (file.size || 0), 0);
+  const firstName = files[0] && (files[0].webkitRelativePath || files[0].name);
+  const setUploadStatus = (pct, meta = {}) => {
+    if (!status) return;
+    const sizeMb = totalSize ? ` · ${(totalSize / 1024 / 1024).toFixed(1)} MB` : '';
+    const label = pct == null ? 'Enviando…' : `${pct}% enviado`;
+    const phase = meta.fileName ? ` · ${meta.fileName}` : (meta.phase === 'processing' ? ' · processando no servidor' : '');
+    status.textContent = `${label}${phase} · ${files.length} arquivo(s)${sizeMb}${firstName ? ' · ' + firstName : ''}`;
+  };
+  progress?.classList.remove('hidden');
+  status?.classList.remove('hidden');
+  if (bar) bar.style.width = '0%';
+  setUploadStatus(0);
+  showToast(`Enviando ${files.length} arquivo(s)… 0%`, 4000);
+  try {
+    const res = await window.api.uploadFiles(files, token, (pct, meta) => {
+      if (pct != null && bar) bar.style.width = pct + '%';
+      setUploadStatus(pct, meta);
+    });
+    if (!res || !res.ok) throw new Error((res && res.error) || 'Upload falhou');
+    state.library = res.library || await window.api.rescan();
+    state.imageCache.clear();
+    await renderAll();
+    route('home');
+    if (bar) bar.style.width = '100%';
+    setUploadStatus(100);
+    showToast(`Upload concluído: ${res.count || files.length} arquivo(s) · 100%`);
+  } catch (e) {
+    if (/token/i.test(String(e.message))) localStorage.removeItem('mediaflix:uploadToken');
+    showToast(e.message || 'Upload falhou', 5000);
+  } finally {
+    setTimeout(() => { progress?.classList.add('hidden'); status?.classList.add('hidden'); }, 1800);
+  }
 }
 
 // ---------- Bootstrap ----------
@@ -1285,6 +2226,8 @@ async function renderAll() {
 }
 
 async function init() {
+  await ensureProfileSelected();
+
   // Topbar scroll state
   document.addEventListener('scroll', () => {
     $('.topbar').classList.toggle('scrolled', window.scrollY > 8);
@@ -1304,11 +2247,43 @@ async function init() {
     });
   }
 
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') saveProgressBeacon('visibility-hidden');
+    else {
+      queueProgressSave({ force: true, reason: 'visibility-visible' });
+      scheduleLandscapeRepair('visibility-visible');
+    }
+  });
+  window.addEventListener('pagehide', () => saveProgressBeacon('pagehide'));
+  window.addEventListener('beforeunload', () => saveProgressBeacon('beforeunload'));
+  document.addEventListener('fullscreenchange', () => scheduleLandscapeRepair('fullscreenchange'));
+  document.addEventListener('webkitfullscreenchange', () => scheduleLandscapeRepair('webkitfullscreenchange'));
+  window.addEventListener('orientationchange', () => setTimeout(() => scheduleLandscapeRepair('orientationchange'), 180));
+  window.addEventListener('resize', () => syncPlayerViewportState(), { passive: true });
+
   // Nav
   $$('.nav-link').forEach((b) => b.addEventListener('click', () => route(b.dataset.route)));
+  $('#mobileLibraryBtn')?.addEventListener('click', () => {
+    route('home');
+    document.getElementById('seriesRow')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  $('#mobileSearchBtn')?.addEventListener('click', () => {
+    route('home');
+    const input = $('#topbarSearchInput');
+    input?.focus();
+    input?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  });
 
-  // Add folder (then auto-fetch TMDB metadata if a key is configured)
+  // Add folder/upload. In the public web version, this opens the native
+  // file picker instead of asking for a server path.
   const addFolder = async () => {
+    const cfg = await window.api.getConfig().catch(() => null);
+    if (cfg && cfg.web && window.api.uploadFiles) {
+      route('settings');
+      showToast('Selecione os episódios ou use “Selecionar pasta” para temporada inteira', 4500);
+      setTimeout(() => document.getElementById('uploadFilesInput')?.click(), 120);
+      return;
+    }
     const res = await window.api.addFolder();
     if (!res.ok) return;
     state.library = res.library;
@@ -1317,7 +2292,6 @@ async function init() {
     showToast('Pasta adicionada');
     // Auto-fetch metadata in background so banners/episode names appear without
     // the user having to click Configurações > Buscar metadados.
-    const cfg = await window.api.getConfig();
     if (cfg && cfg.tmdbKey) {
       showToast('Buscando metadados no TMDB…', 4000);
       const meta = await window.api.fetchAllMeta();
@@ -1335,6 +2309,19 @@ async function init() {
     await addFolder();
     renderSettings();
   });
+
+  const uploadFilesBtn = document.getElementById('uploadFilesBtn');
+  const uploadFolderBtn = document.getElementById('uploadFolderBtn');
+  const uploadFilesInput = document.getElementById('uploadFilesInput');
+  const uploadFolderInput = document.getElementById('uploadFolderInput');
+  if (uploadFilesBtn && uploadFilesInput) {
+    uploadFilesBtn.addEventListener('click', () => uploadFilesInput.click());
+    uploadFilesInput.addEventListener('change', () => uploadSelectedFiles(uploadFilesInput.files));
+  }
+  if (uploadFolderBtn && uploadFolderInput) {
+    uploadFolderBtn.addEventListener('click', () => uploadFolderInput.click());
+    uploadFolderInput.addEventListener('change', () => uploadSelectedFiles(uploadFolderInput.files));
+  }
 
   // Rescan
   $('#rescanBtn').addEventListener('click', async () => {
@@ -1432,7 +2419,7 @@ async function init() {
   // Initial load
   state.library = await window.api.getLibrary();
   await renderAll();
-  if (!state.library.length) route('home');
+  route('home');
 
   // Versão visível + checagem de update silenciosa
   try {

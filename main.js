@@ -24,6 +24,8 @@ const userDir = app.getPath('userData');
 const configPath = path.join(userDir, 'config.json');
 const libraryPath = path.join(userDir, 'library.json');
 const progressPath = path.join(userDir, 'progress.json');
+const thumbsDir = path.join(userDir, 'thumbnails');
+try { fs.mkdirSync(thumbsDir, { recursive: true }); } catch {}
 
 const VIDEO_EXT = new Set(['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.m4v', '.webm', '.flv', '.ts']);
 const IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp']);
@@ -40,6 +42,7 @@ let config = readJson(configPath, { folders: [], vlcPath: '', vlcPort: 9090, vlc
 if (config.embeddedPlayer === undefined) config.embeddedPlayer = true;
 if (config.autoNext === undefined) config.autoNext = true;
 if (config.autoNextSeconds === undefined) config.autoNextSeconds = 8;
+if (config.doubleTapSeconds === undefined) config.doubleTapSeconds = 5;
 if (config.autoRescan === undefined) config.autoRescan = true;
 if (config.skipIntro === undefined) config.skipIntro = false;
 let progress = readJson(progressPath, {}); // { [filePath]: { time, length, updatedAt } }
@@ -94,6 +97,20 @@ function listVideosRecursive(dir, depth = 0, max = 4) {
 
 function naturalSort(a, b) {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+function normalizePath(p) { return path.resolve(String(p || '')); }
+function isInside(child, parent) {
+  const rel = path.relative(normalizePath(parent), normalizePath(child));
+  return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel));
+}
+function safeVideoFile(filePath) {
+  const p = normalizePath(filePath);
+  const ext = path.extname(p).toLowerCase();
+  if (!VIDEO_EXT.has(ext)) return null;
+  if (!config.folders.some((folder) => isInside(p, folder))) return null;
+  try { if (fs.statSync(p).isFile()) return p; } catch {}
+  return null;
 }
 
 // Pick the best name to use as the show title given a folder. If the folder
@@ -316,7 +333,8 @@ function scanLibrary() {
           const epMap = meta.episodes[season.number];
           if (!epMap) continue;
           for (const ep of season.episodes) {
-            const entry = epMap[ep.index];
+            // TMDB maps by real episode_number, not by positional index.
+            const entry = epMap[ep.episode] || epMap[String(ep.episode)] || epMap[ep.index];
             if (!entry) continue;
             if (typeof entry === 'string') {
               if (entry) ep.title = entry;
@@ -324,6 +342,7 @@ function scanLibrary() {
               if (entry.name) ep.title = entry.name;
               if (entry.overview) ep.overview = entry.overview;
               if (entry.airDate) ep.airDate = entry.airDate;
+              if (entry.stillPath) ep.stillPath = entry.stillPath;
             }
           }
         }
@@ -432,12 +451,11 @@ function startPolling(filePath) {
     try {
       const s = await vlcStatusRequest();
       if (typeof s.time === 'number' && typeof s.length === 'number' && s.length > 0) {
-        progress[filePath] = {
-          time: s.time,
-          length: s.length,
-          updatedAt: Date.now(),
-        };
-        saveProgress();
+        const entry = { time: s.time, length: s.length, updatedAt: Date.now() };
+        if (!shouldIgnoreProgressSave(progress[filePath], entry)) {
+          progress[filePath] = entry;
+          saveProgress();
+        }
       }
     } catch {
       // VLC may have closed
@@ -1224,6 +1242,57 @@ ipcMain.handle('player:probe', async (_e, filePath) => {
   return { duration: info.duration, audio: info.audio, preferred, subs: info.subs || [], chapters: info.chapters || [] };
 });
 
+function thumbnailCachePath(filePath, atSec) {
+  const stat = fs.statSync(filePath);
+  const key = `${filePath}|${stat.mtimeMs}|${stat.size}|${Math.round(atSec)}`;
+  const h = require('crypto').createHash('sha1').update(key).digest('hex').slice(0, 18);
+  return path.join(thumbsDir, `${h}.jpg`);
+}
+
+function runFfmpegThumb(filePath, out, atSec) {
+  return new Promise((resolve) => {
+    const ffmpeg = getFfmpegPath();
+    if (!ffmpeg) return resolve(false);
+    const args = [
+      '-y', '-hide_banner', '-loglevel', 'error',
+      '-ss', String(Math.max(0, atSec)), '-i', filePath,
+      '-t', '8', '-vf', 'thumbnail,scale=640:-2',
+      '-frames:v', '1', '-q:v', '3', out,
+    ];
+    const proc = spawn(ffmpeg, args, { stdio: 'ignore' });
+    proc.on('exit', () => {
+      try { resolve(fs.statSync(out).size > 1200); } catch { resolve(false); }
+    });
+    proc.on('error', () => resolve(false));
+  });
+}
+
+ipcMain.handle('thumbnail:get', async (_e, filePath) => {
+  try {
+    const p = safeVideoFile(filePath);
+    if (!p) return { ok: false, error: 'Arquivo não autorizado.' };
+    const info = await probeFile(p);
+    const dur = Number(info.duration) || 0;
+    const candidates = dur > 0
+      ? [Math.max(45, dur * 0.18), Math.max(90, dur * 0.32), Math.max(15, dur * 0.08), Math.max(120, dur * 0.55)].filter((t) => t < Math.max(30, dur - 20))
+      : [60, 120, 15];
+    for (const at of candidates) {
+      const out = thumbnailCachePath(p, at);
+      if (fs.existsSync(out)) {
+        const data = fs.readFileSync(out).toString('base64');
+        return { ok: true, data: `data:image/jpeg;base64,${data}` };
+      }
+      if (await runFfmpegThumb(p, out, at)) {
+        const data = fs.readFileSync(out).toString('base64');
+        return { ok: true, data: `data:image/jpeg;base64,${data}` };
+      }
+    }
+    return { ok: false, error: 'Não consegui gerar thumbnail.' };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+});
+
 // Extrai uma legenda embutida (por absolute index do stream subtitle) e devolve em VTT
 ipcMain.handle('player:extractSub', (_e, filePath, subIdx) => {
   return new Promise((resolve) => {
@@ -1429,11 +1498,21 @@ ipcMain.handle('player:sidecars', (_e, filePath) => {
   }
 });
 
-ipcMain.handle('progress:save', (_e, filePath, time, length) => {
+function shouldIgnoreProgressSave(existing, incoming) {
+  if (!existing) return false;
+  const oldTime = Number(existing.time) || 0;
+  const newTime = Number(incoming.time) || 0;
+  if (oldTime > 60 && newTime < 30 && newTime < oldTime - 30) return true;
+  return false;
+}
+
+ipcMain.handle('progress:save', (_e, filePath, time, length, updatedAt) => {
   if (!filePath || typeof time !== 'number' || typeof length !== 'number' || length <= 0) return { ok: false };
-  progress[filePath] = { time, length, updatedAt: Date.now() };
+  const entry = { time, length, updatedAt: Number(updatedAt) || Date.now() };
+  if (shouldIgnoreProgressSave(progress[filePath], entry)) return { ok: true, saved: false };
+  progress[filePath] = entry;
   saveProgress();
-  return { ok: true };
+  return { ok: true, saved: true };
 });
 
 ipcMain.handle('history:logOpen', (_e, filePath) => {
@@ -1470,7 +1549,7 @@ ipcMain.handle('config:setToggle', (_e, key, value) => {
 });
 
 ipcMain.handle('config:setNumber', (_e, key, value) => {
-  const allowed = { autoNextSeconds: { min: 3, max: 30 } };
+  const allowed = { autoNextSeconds: { min: 3, max: 30 }, doubleTapSeconds: { min: 3, max: 30 } };
   if (!allowed[key]) return { ok: false };
   const n = Number(value);
   if (!Number.isFinite(n)) return { ok: false };
