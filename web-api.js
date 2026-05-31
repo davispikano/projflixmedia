@@ -42,12 +42,16 @@
     onMetaProgress: () => {},
     getProfiles: () => request('/api/profiles'),
     createProfile: (name) => post('/api/profiles', { name }),
+    deleteProfile: (id) => request('/api/profiles?id=' + encodeURIComponent(id), { method: 'DELETE' }),
+    getStorageStatus: () => request('/api/storage/status'),
     setCurrentProfile: (id) => { currentProfileId = id || 'default'; localStorage.setItem('mediaflix:profileId', currentProfileId); return Promise.resolve({ ok: true }); },
     getCurrentProfileId: () => currentProfileId,
     getProgress: () => request(withProfile('/api/progress')),
     clearProgress: (p) => request(withProfile('/api/progress?path=' + encodeURIComponent(p)), { method: 'DELETE' }),
     getHistory: () => request(withProfile('/api/history')),
     clearHistory: () => request(withProfile('/api/history'), { method: 'DELETE' }),
+    deleteMediaFile: (p) => request('/api/media-file?path=' + encodeURIComponent(p), { method: 'DELETE' }),
+    autoDeleteWatched: (p) => post('/api/auto-delete-check', bodyWithProfile({ path: p })),
 
     getUploadToken: () => request('/api/upload-token'),
     play: async (p) => {

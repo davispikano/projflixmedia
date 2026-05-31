@@ -69,12 +69,14 @@ function itemProgress(item) {
 }
 
 function nextEpisode(item) {
+  const playable = (item.episodes || []).filter((e) => !e.missing && e.path);
+  if (!playable.length) return null;
   const last = itemProgress(item);
-  if (!last || !last.episode) return item.episodes[0];
+  if (!last || !last.episode) return playable[0];
   if (last.ratio < 0.95) return last.episode;
-  // pick next index in flat episode list
-  const idx = item.episodes.findIndex((e) => e.path === last.episode.path);
-  return item.episodes[Math.min(idx + 1, item.episodes.length - 1)];
+  const idx = playable.findIndex((e) => e.path === last.episode.path);
+  if (idx < 0) return playable[0];
+  return playable[Math.min(idx + 1, playable.length - 1)];
 }
 
 async function loadImage(filePath) {
@@ -100,7 +102,10 @@ function episodeThumbImg(ep) {
   const primary = episodeThumbSrc(ep);
   const src = primary || 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
   const tmdb = primary ? '1' : '0';
-  return `<img loading="lazy" src="${src}" data-episode-path="${escapeHtml(ep.path)}" data-tmdb="${tmdb}" alt="" onerror="handleEpisodeThumbError(this)" />`;
+  // Episodios missing nao tem arquivo local — nao tentar buscar thumbnail
+  // local pelo backend (causaria 404).
+  const pathAttr = ep && ep.path ? escapeHtml(ep.path) : '';
+  return `<img loading="lazy" src="${src}" data-episode-path="${pathAttr}" data-tmdb="${tmdb}" alt="" onerror="handleEpisodeThumbError(this)" />`;
 }
 
 async function loadLocalEpisodeThumb(img) {
@@ -328,11 +333,33 @@ async function fillRow(rowSel, trackSel, countSel, items, opts = {}) {
   }
 }
 
+
+function ratingClass(value) {
+  const n = Number(value) || 0;
+  if (n >= 8.5) return 'elite';
+  if (n >= 7.5) return 'great';
+  if (n >= 6.5) return 'good';
+  return 'mixed';
+}
+function ratingLabel(value) {
+  const n = Number(value) || 0;
+  if (n >= 8.5) return 'Excelente';
+  if (n >= 7.5) return 'Muito bom';
+  if (n >= 6.5) return 'Bom';
+  return 'Misto';
+}
+function seasonAverage(season) {
+  const vals = (season && season.episodes || []).map((e) => e.imdbRating).filter((r) => typeof r === 'number');
+  if (!vals.length) return null;
+  return +(vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(1);
+}
+
 // ---------- Detail overlay ----------
 async function openDetail(item) {
   state.currentDetail = item;
   const d = $('#detail');
   d.classList.remove('hidden');
+  document.body.classList.add('detail-open');
 
   const bg = item.banner ? await loadImage(item.banner) : null;
   $('#detailBg').style.backgroundImage = bg ? `url('${bg}')` : 'linear-gradient(135deg,#1a1a1f,#0a0a0b)';
@@ -372,6 +399,7 @@ async function openDetail(item) {
   const r = item.imdbRating;
   if (r) {
     ratingEl.hidden = false;
+    ratingEl.className = 'rating-strip ' + ratingClass(r);
     $('#detailRatingValue').textContent = r.toFixed(1);
     $('#detailRatingSource').textContent = item.imdbId ? 'IMDb' : 'TMDB';
     let bestStr = '';
@@ -381,7 +409,7 @@ async function openDetail(item) {
         if (typeof ep.imdbRating === 'number' && (!best || ep.imdbRating > best.imdbRating)) best = ep;
       }
       if (best) {
-        bestStr = `Melhor episódio<br><b>T${best.season} EP ${best.index}</b> · ★ ${best.imdbRating.toFixed(1)}`;
+        bestStr = `<span class="rating-pill ${ratingClass(best.imdbRating)}">${ratingLabel(best.imdbRating)}</span><br>Melhor episódio <b>T${best.season} EP ${best.episode || best.index}</b> · ★ ${best.imdbRating.toFixed(1)}`;
       }
     }
     $('#detailRatingBest').innerHTML = bestStr;
@@ -406,14 +434,21 @@ async function openDetail(item) {
     $('#detailMeta').textContent = metaParts.join(' · ');
 
     const next = nextEpisode(item);
-    const prog = state.progress[next.path];
-    const epLabel = next.season != null
-      ? `T${next.season} EP ${next.index}`
-      : `EP ${next.index}`;
-    $('#detailPlayLabel').textContent = prog && prog.time > 30 ? `Continuar ${epLabel}` : `Reproduzir ${epLabel}`;
-    $('#detailPlayBtn').onclick = () => playFile(next.path, item, next);
+    if (next) {
+      const prog = state.progress[next.path];
+      const epLabel = next.season != null
+        ? `T${next.season} EP ${next.index}`
+        : `EP ${next.index}`;
+      $('#detailPlayLabel').textContent = prog && prog.time > 30 ? `Continuar ${epLabel}` : `Reproduzir ${epLabel}`;
+      $('#detailPlayBtn').onclick = () => playFile(next.path, item, next);
+      $('#detailPlayBtn').classList.remove('hidden');
+    } else {
+      // Todos os episodios sao missing (so temos metadata, nada no disco ainda)
+      $('#detailPlayLabel').textContent = 'Nenhum episódio disponível';
+      $('#detailPlayBtn').onclick = () => showToast('Faça upload da pasta da temporada pra começar a assistir.', 3600);
+    }
 
-    renderSeasonTabs(item, next.season != null ? next.season : (item.seasons[0] && item.seasons[0].number));
+    renderSeasonTabs(item, (next && next.season != null) ? next.season : (item.seasons[0] && item.seasons[0].number));
   } else {
     $('#detailMeta').textContent = item.year ? `Filme · ${item.year}` : 'Filme';
     const prog = state.progress[item.path];
@@ -436,7 +471,8 @@ function renderSeasonTabs(item, activeSeasonNum) {
     for (const season of item.seasons) {
       const btn = document.createElement('button');
       btn.className = 'season-tab' + (season.number === activeSeasonNum ? ' active' : '');
-      btn.textContent = `Temporada ${season.number}`;
+      const avg = seasonAverage(season);
+      btn.innerHTML = `Temporada ${season.number}${avg ? ` <span class="season-rating">★ ${avg.toFixed(1)}</span>` : ''}`;
       btn.addEventListener('click', () => renderSeasonTabs(item, season.number));
       tabs.appendChild(btn);
     }
@@ -446,17 +482,67 @@ function renderSeasonTabs(item, activeSeasonNum) {
   renderEpisodeList(active);
 }
 
+
+function formatBytes(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1024) return `${n} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v >= 10 || i === 0 ? v.toFixed(1) : v.toFixed(2)} ${units[i]}`;
+}
+async function deleteEpisodeFile(ep, season) {
+  if (!ep || !ep.path || !window.api.deleteMediaFile) return;
+  const label = `T${String(ep.season || season.number || 1).padStart(2, '0')} E${String(ep.episode || ep.index || 1).padStart(2, '0')}`;
+  const confirmed = await openConfirmModal({
+    title: `Apagar ${label}?`,
+    message: `O arquivo "${ep.file || ep.title || 'episódio'}" será removido do disco para liberar espaço. O progresso e histórico desse episódio também serão removidos do banco.`,
+    confirmText: 'Apagar do disco',
+    cancelText: 'Cancelar',
+    danger: true,
+  });
+  if (!confirmed) return;
+  try {
+    const res = await window.api.deleteMediaFile(ep.path);
+    if (!res || !res.ok) throw new Error((res && res.error) || 'Falha ao apagar arquivo');
+    state.library = res.library || await window.api.getLibrary();
+    state.progress = await window.api.getProgress();
+    state.history = await window.api.getHistory();
+    const fresh = state.library.find((item) => state.currentDetail && item.id === state.currentDetail.id) || state.library.find((item) => state.currentDetail && item.title === state.currentDetail.title);
+    if (fresh) {
+      state.currentDetail = fresh;
+      const activeSeason = fresh.seasons.find((s) => s.number === season.number) || fresh.seasons[0];
+      const epCount = fresh.episodes.length;
+      const metaParts = [`${epCount} episódios`];
+      if (fresh.seasons.length > 1) metaParts.unshift(`${fresh.seasons.length} temporadas`);
+      if (fresh.year) metaParts.push(fresh.year);
+      document.getElementById('detailMeta').textContent = metaParts.join(' · ');
+      renderSeasonTabs(fresh, activeSeason && activeSeason.number);
+    } else {
+      closeDetail();
+    }
+    await renderRows();
+    showToast(`Arquivo apagado · ${formatBytes(res.deletedBytes)} liberados`);
+  } catch (err) {
+    showToast(err.message || 'Não consegui apagar o episódio', 5000);
+  }
+}
+
 function renderEpisodeList(season) {
   const list = $('#episodeList');
   list.innerHTML = '';
   for (const ep of season.episodes) {
-    const p = state.progress[ep.path];
+    const isMissing = !!ep.missing;
+    const p = !isMissing ? state.progress[ep.path] : null;
     const ratio = p && p.length ? Math.min(1, p.time / p.length) : 0;
     const li = document.createElement('li');
-    li.className = 'episode';
-    const statusChip = ratio >= 0.95
-      ? '<span class="episode-status watched">Assistido</span>'
-      : (ratio > 0.02 ? '<span class="episode-status continue">Continuar</span>' : '');
+    li.className = 'episode' + (isMissing ? ' missing' : '');
+    const statusChip = isMissing
+      ? '<span class="episode-status missing-chip">Indisponível</span>'
+      : (ratio >= 0.95
+          ? '<span class="episode-status watched">Assistido</span>'
+          : (ratio > 0.02 ? '<span class="episode-status continue">Continuar</span>' : ''));
     li.innerHTML = `
       <div class="episode-thumb"${episodeThumbFallbackStyle(state.currentDetail)}>
         ${episodeThumbImg(ep)}
@@ -467,13 +553,27 @@ function renderEpisodeList(season) {
       <div>
         <p class="episode-title">${escapeHtml(ep.title)}</p>
         ${ep.overview ? `<p class="episode-overview">${escapeHtml(ep.overview)}</p>` : ''}
+        ${isMissing && ep.airDate ? `<p class="episode-airdate">Estreia: ${escapeHtml(ep.airDate)}</p>` : ''}
       </div>
       <div class="episode-meta">
-        ${typeof ep.imdbRating === 'number' ? `<span class="episode-rating-big">★ ${ep.imdbRating.toFixed(1)}</span>` : ''}
+        ${typeof ep.imdbRating === 'number' ? `<span class="episode-rating-big ${ratingClass(ep.imdbRating)}" title="IMDb · ${ratingLabel(ep.imdbRating)}">★ ${ep.imdbRating.toFixed(1)}</span>` : ''}
         <span class="episode-time">${p ? `${fmtTime(p.time)} / ${fmtTime(p.length)}` : ''}</span>
+        ${isMissing
+          ? '<span class="episode-missing-label" aria-label="Episódio não está na sua biblioteca">Não baixado</span>'
+          : '<button type="button" class="episode-delete" title="Apagar episódio do disco" aria-label="Apagar episódio do disco">Apagar</button>'}
       </div>
     `;
-    li.addEventListener('click', () => playFile(ep.path, state.currentDetail, ep));
+    if (!isMissing) {
+      const deleteBtn = li.querySelector('.episode-delete');
+      if (deleteBtn) deleteBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        deleteEpisodeFile(ep, season);
+      });
+      li.addEventListener('click', () => playFile(ep.path, state.currentDetail, ep));
+    } else {
+      li.addEventListener('click', () => showToast('Episódio ainda não foi adicionado à biblioteca. Faça o upload da pasta da temporada.', 3600));
+    }
     list.appendChild(li);
   }
   hydrateEpisodeThumbs(list);
@@ -481,6 +581,7 @@ function renderEpisodeList(season) {
 
 function closeDetail() {
   $('#detail').classList.add('hidden');
+  document.body.classList.remove('detail-open');
   state.currentDetail = null;
 }
 
@@ -505,6 +606,7 @@ async function openDiscoverDetail(item) {
   state.currentDetail = item;
   const d = $('#detail');
   d.classList.remove('hidden');
+  document.body.classList.add('detail-open');
 
   const bg = item.banner ? await loadImage(item.banner) : null;
   $('#detailBg').style.backgroundImage = bg ? `url('${bg}')` : 'linear-gradient(135deg,#1a1a1f,#0a0a0b)';
@@ -523,6 +625,7 @@ async function openDiscoverDetail(item) {
   const r2 = item.imdbRating || item.tmdbRating;
   if (r2) {
     ratingEl2.hidden = false;
+    ratingEl2.className = 'rating-strip ' + ratingClass(r2);
     $('#detailRatingValue').textContent = r2.toFixed(1);
     $('#detailRatingSource').textContent = item.imdbRating ? 'IMDb' : 'TMDB';
     $('#detailRatingBest').innerHTML = '';
@@ -632,6 +735,10 @@ async function runSearch() {
 async function playItem(item) {
   if (item.type === 'series') {
     const ep = nextEpisode(item);
+    if (!ep) {
+      showToast('Nenhum episódio disponível para reproduzir.', 3000);
+      return;
+    }
     return playFile(ep.path, item, ep);
   }
   return playFile(item.path, item, null);
@@ -665,6 +772,7 @@ const player = {
   scrubbing: false,
   intendedLandscape: false, orientationRetryTimer: null,
   saveInFlight: null, pendingSave: null, lastSavedAt: 0,
+  openSeq: 0,
 };
 
 function isMobileViewport() {
@@ -897,7 +1005,23 @@ function showLockFloat() {
 function togglePlayerFit() {
   player.fitMode = player.fitMode === 'cover' ? 'contain' : 'cover';
   player.el?.classList.toggle('fit-cover', player.fitMode === 'cover');
+  const ico = document.getElementById('playerFitIcon');
+  if (ico) {
+    ico.innerHTML = player.fitMode === 'cover'
+      // "shrink" — sair do preenchimento
+      ? '<path d="M9 3v4a2 2 0 0 1-2 2H3"/><path d="M21 9h-4a2 2 0 0 1-2-2V3"/><path d="M3 15h4a2 2 0 0 1 2 2v4"/><path d="M15 21v-4a2 2 0 0 1 2-2h4"/>'
+      // "crop" — preencher
+      : '<path d="M7 2v15a1 1 0 0 0 1 1h13"/><path d="M2 7h15a1 1 0 0 1 1 1v13"/>';
+  }
   showToast(player.fitMode === 'cover' ? 'Preenchendo tela' : 'Ajustado sem cortar');
+}
+
+function updateFsIcon() {
+  const ico = document.getElementById('playerFsIcon');
+  if (!ico) return;
+  ico.innerHTML = document.fullscreenElement
+    ? '<path d="M8 4v3a1 1 0 0 1-1 1H4M16 4v3a1 1 0 0 0 1 1h3M8 20v-3a1 1 0 0 0-1-1H4M16 20v-3a1 1 0 0 1 1-1h3"/>'
+    : '<path d="M4 9V5a1 1 0 0 1 1-1h4M20 9V5a1 1 0 0 0-1-1h-4M4 15v4a1 1 0 0 0 1 1h4M20 15v4a1 1 0 0 1-1 1h-4"/>';
 }
 
 function ensurePlayerInit() {
@@ -1141,6 +1265,12 @@ function bindVideoListeners(v) {
     if (playPath) playPath.setAttribute('d', PATH_PAUSE);
     if (centerPath) centerPath.setAttribute('d', PATH_PAUSE);
     if (player.onPlayHide) player.onPlayHide();
+    // Se o player ja foi fechado (race condition do open vs close), nao
+    // ativamos fullscreen/landscape: pausamos imediatamente.
+    if (!player.current || player.el.classList.contains('hidden')) {
+      try { v.pause(); v.removeAttribute('src'); v.load(); } catch {}
+      return;
+    }
     if (!player.autoFsTriggered) {
       player.autoFsTriggered = true;
       tryAutoLandscape(v);
@@ -1429,17 +1559,20 @@ function setupEpisodesPanel(item, currentEp) {
     const season = seasons[idx]; if (!season) return;
     list.innerHTML = '';
     for (const ep of (season.episodes || [])) {
+      const isMissing = !!ep.missing;
       const epNum = ep.episode || ep.index || 0;
-      const isActive = currentEp && currentEp.path === ep.path;
-      const p = state.progress && state.progress[ep.path];
+      const isActive = !isMissing && currentEp && currentEp.path === ep.path;
+      const p = !isMissing && state.progress ? state.progress[ep.path] : null;
       const ratio = (p && p.length) ? Math.min(1, p.time / p.length) : 0;
       const dur = (ep.runtime ? ep.runtime + ' min' : (p && p.length ? fmtTime(p.length) : ''));
       const div = document.createElement('div');
-      div.className = 'player-eps-item' + (isActive ? ' active' : '');
+      div.className = 'player-eps-item' + (isActive ? ' active' : '') + (isMissing ? ' missing' : '');
       div.innerHTML = `
         <div class="player-eps-thumb"${episodeThumbFallbackStyle(item)}>
           ${episodeThumbImg(ep)}
-          <div class="play-overlay"><svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg></div>
+          ${isMissing
+            ? '<div class="play-overlay missing-overlay"><span>Indisponível</span></div>'
+            : '<div class="play-overlay"><svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg></div>'}
           ${ratio > 0 ? `<div class="progress-bar"><div class="progress-fill" style="width:${(ratio*100).toFixed(1)}%"></div></div>` : ''}
         </div>
         <div class="player-eps-info">
@@ -1447,10 +1580,15 @@ function setupEpisodesPanel(item, currentEp) {
             <span class="player-eps-num">${epNum}.</span>
             <span class="player-eps-name">${escapeHtml(ep.title || 'Episódio ' + epNum)}</span>
             ${dur ? `<span class="player-eps-dur">${dur}</span>` : ''}
+            ${isMissing ? '<span class="player-eps-missing-tag">Não baixado</span>' : ''}
           </div>
           ${ep.overview ? `<div class="player-eps-desc">${escapeHtml(ep.overview)}</div>` : ''}
         </div>`;
       div.addEventListener('click', () => {
+        if (isMissing) {
+          showToast('Episódio ainda não foi adicionado à biblioteca.', 3000);
+          return;
+        }
         panel.classList.add('hidden');
         closeEmbeddedPlayer();
         playFile(ep.path, item, ep);
@@ -1497,6 +1635,11 @@ async function updatePlayerSeriesHud(item, episode) {
 
 async function openEmbeddedPlayer({ url, filePath, item, episode, autoNext, autoNextSeconds }) {
   ensurePlayerInit();
+  // Token de cancelamento: se o usuario fechar o player antes desse async
+  // terminar de montar tudo, abortamos pra nao chamar loadStream depois e
+  // fazer o video tocar "por tras" (com rotacao de tela e tudo).
+  const mySeq = ++player.openSeq;
+  const cancelled = () => mySeq !== player.openSeq;
   // Reset total do <video>: HTML5 nao remove textTracks da colecao mesmo
   // depois de remover <track>. Clonar o elemento descarta tudo (legendas
   // anteriores nao "vazam" pro proximo episodio/serie).
@@ -1507,6 +1650,7 @@ async function openEmbeddedPlayer({ url, filePath, item, episode, autoNext, auto
     window.api.probe(filePath).catch(() => ({ duration: 0, audio: [], preferred: 0 })),
     window.api.getConfig().catch(() => ({})),
   ]);
+  if (cancelled()) return;
   // Arquivos "nativos" (mp4/webm/m4v/mov) sao servidos via range pelo
   // servidor — `&ss=` na URL eh ignorado. Pra esses, fazemos seek client-side
   // via v.currentTime e NAO usamos virtualOffset (senao a contagem de tempo,
@@ -1526,6 +1670,8 @@ async function openEmbeddedPlayer({ url, filePath, item, episode, autoNext, auto
     preferredAudioLang: probe.preferredAudioLang || 'pt',
     preferredSubLang: probe.preferredSubLang || 'off',
     skipIntroEnabled: probe.skipIntro !== false,
+    autoSkipIntroEnabled: probe.autoSkipIntro !== false,
+    autoSkipIntroSeconds: Number.isFinite(probe.autoSkipIntroSeconds) ? probe.autoSkipIntroSeconds : 5,
     doubleTapSeconds: cfg.doubleTapSeconds || 5,
   };
   console.log('[player] chapters:', probe.chapters, 'isNative:', isNative, 'prefAudio:', probe.preferredAudioLang, 'prefSub:', probe.preferredSubLang);
@@ -1548,8 +1694,10 @@ async function openEmbeddedPlayer({ url, filePath, item, episode, autoNext, auto
   let subs = [];
   try {
     const r = await window.api.getSidecars(filePath);
+    if (cancelled()) return;
     if (r && r.ok) subs = (r.subs || []).map((s) => ({ ...s, kind: 'sidecar' }));
   } catch {}
+  if (cancelled()) return;
   for (const es of (probe.subs || [])) {
     subs.push({
       kind: 'embed',
@@ -1582,6 +1730,7 @@ async function openEmbeddedPlayer({ url, filePath, item, episode, autoNext, auto
       const idx = subs.findIndex((s) => re.test(s.lang || '') || re.test(s.label || ''));
       if (idx >= 0) {
         try { await selectSub(idx); } catch (e) { console.warn('auto-select sub falhou:', e); }
+        if (cancelled()) return;
       }
     }
   }
@@ -1595,6 +1744,7 @@ async function openEmbeddedPlayer({ url, filePath, item, episode, autoNext, auto
     // perto do fim. Só tratamos como finalizado de verdade nos últimos 10s.
     if (remain > 10) startSec = Math.max(0, savedProg.time - 3);
   }
+  if (cancelled()) return;
   await loadStream(startSec);
 }
 
@@ -1606,7 +1756,13 @@ async function loadStream(seekSec) {
   const cur = player.current;
   if (!cur) return;
   const v = player.video;
+  // Token de cancelamento: se closeEmbeddedPlayer rodar enquanto a gente ta
+  // no await abaixo, abortamos antes de re-anexar src+load (senao o video
+  // recomeca a tocar depois do close, com rotacao de tela e tudo).
+  const mySeq = player.openSeq;
+  const cancelled = () => mySeq !== player.openSeq || player.current !== cur;
   await queueProgressSave({ force: true, reason: 'before-loadStream' });
+  if (cancelled()) return;
   v.pause();
   while (v.firstChild) v.removeChild(v.firstChild);
   v.removeAttribute('src');
@@ -1639,8 +1795,11 @@ async function loadStream(seekSec) {
   // tambem alimenta features futuras do player custom.
   applyChaptersTrack();
 
+  if (cancelled()) { v.removeAttribute('src'); v.load(); return; }
   v.load();
   v.addEventListener('loadedmetadata', () => {
+    // Reverifica no callback async — close pode ter rodado entre o load() e o evento.
+    if (cancelled()) { v.pause(); v.removeAttribute('src'); v.load(); return; }
     if (cur.isNative && want > 0) {
       try { v.currentTime = want; } catch {}
     }
@@ -1656,6 +1815,7 @@ async function loadStream(seekSec) {
     } else {
       enableSave();
     }
+    if (cancelled()) return;
     v.play().catch(()=>{});
   }, { once: true });
 }
@@ -1740,6 +1900,11 @@ function buildAudioMenu(tracks, currentIdx) {
 }
 
 function closeEmbeddedPlayer() {
+  // Invalida qualquer openEmbeddedPlayer ainda em andamento (probe/sidecars/etc).
+  // Sem isso, fechar rapido depois de clicar num episodio fazia a corrotina
+  // de open continuar, tirar o 'hidden' do player e chamar loadStream → o
+  // video tocava "por tras" no menu e ate girava a tela (tryAutoLandscape).
+  player.openSeq++;
   cancelAutoNext();
   hideSkipBtn();
   if (!player.el) return;
@@ -1783,9 +1948,10 @@ function closeEmbeddedPlayer() {
 
 function findNextEpisode(item, currentEp) {
   if (!item || item.type !== 'series' || !currentEp) return null;
-  const idx = item.episodes.findIndex((e) => e.path === currentEp.path);
-  if (idx < 0 || idx >= item.episodes.length - 1) return null;
-  return item.episodes[idx + 1];
+  const playable = (item.episodes || []).filter((e) => !e.missing && e.path);
+  const idx = playable.findIndex((e) => e.path === currentEp.path);
+  if (idx < 0 || idx >= playable.length - 1) return null;
+  return playable[idx + 1];
 }
 
 function onPlaybackEnded() {
@@ -1818,13 +1984,13 @@ async function showAutoNextCard(nextEp) {
     cdEl.textContent = `(${player.nextRemaining}s)`;
     if (player.nextRemaining <= 0) {
       cancelAutoNext();
-      playFile(nextEp.path, cur.item, nextEp);
+      advanceToNext(cur, nextEp);
     }
   }, 1000);
 
   document.getElementById('playerNextPlayBtn').onclick = () => {
     cancelAutoNext();
-    playFile(nextEp.path, cur.item, nextEp);
+    advanceToNext(cur, nextEp);
   };
   document.getElementById('playerNextCancelBtn').onclick = () => {
     cancelAutoNext();
@@ -1838,6 +2004,31 @@ function cancelAutoNext() {
   if (card) card.classList.add('hidden');
 }
 
+// Avança para o próximo episódio e, se a opção "apagar assistidos" estiver
+// ligada, pede ao servidor para apagar o episódio anterior. A decisão de
+// apagar é 100% do servidor a partir do banco (watch_progress); aqui só
+// garantimos que o progresso final foi gravado como assistido antes de pedir.
+async function advanceToNext(cur, nextEp) {
+  const prevPath = cur && cur.filePath;
+  const prevLen = (cur && cur.duration) || 0;
+  await playFile(nextEp.path, cur.item, nextEp);
+  if (!prevPath || !window.api.autoDeleteWatched) return;
+  try {
+    if (prevLen > 0) await window.api.saveProgress(prevPath, prevLen, prevLen);
+    const r = await window.api.autoDeleteWatched(prevPath);
+    if (r && r.deleted) {
+      if (r.library) state.library = r.library;
+      state.progress = await window.api.getProgress();
+      state.history = await window.api.getHistory();
+      await renderRows();
+      await renderHero();
+      showToast(`Episódio assistido apagado · ${formatBytes(r.deletedBytes || 0)} liberados`);
+    }
+  } catch (e) {
+    // Silencioso de propósito: falha ao apagar nunca pode atrapalhar a reprodução.
+  }
+}
+
 // ---------- Skip intro/recap (por capitulos do MKV) ----------
 const SKIP_PATTERNS = [
   { re: /\b(intro|opening|abertura|op|openning|theme)\b/i, label: 'Pular abertura' },
@@ -1849,24 +2040,21 @@ const SKIP_PATTERNS = [
 // heuristica (primeiros capitulos curtos no inicio do episodio sao
 // tipicamente recap/abertura, mesmo quando o titulo eh apenas um timestamp).
 function chapterSkipLabel(chap, allChaps, totalDuration) {
-  // Match explicito por nome
-  for (const p of SKIP_PATTERNS) if (chap.title && p.re.test(chap.title)) return p.label;
+  // Match explicito por nome → ALTA confianca (auto-skip permitido)
+  for (const p of SKIP_PATTERNS) if (chap.title && p.re.test(chap.title)) return { label: p.label, confident: true };
   if (!allChaps || allChaps.length < 3) return null;
   const dur = chap.end - chap.start;
   if (!(dur > 0)) return null;
   const idx = allChaps.indexOf(chap);
   if (idx < 0) return null;
-  // duracao valida e finita (MKV transcoded as vezes da Infinity)
   const total = (totalDuration && Number.isFinite(totalDuration) && totalDuration > 0) ? totalDuration : 0;
-  // Capitulo de abertura/recap: precisa estar ENTRE OS 2 PRIMEIROS, no comeco
-  // do video (<6 min), curto (<=4 min) e nao pode estar na segunda metade.
+  // Heuristica: abertura nao nomeada — confianca BAIXA (so botao manual)
   if (idx <= 1 && chap.start < 360 && dur <= 240) {
-    if (!total || chap.start < total * 0.4) return 'Pular abertura';
+    if (!total || chap.start < total * 0.4) return { label: 'Pular abertura', confident: false };
   }
-  // Creditos: precisa ser um dos 2 ULTIMOS capitulos, perto do fim (>92%),
-  // curto (<=2 min). Exige totalDuration valido pra evitar falso positivo.
+  // Creditos: NUNCA auto-skip (usuario pode querer assistir cena pos-creditos)
   if (total && idx >= allChaps.length - 2 && chap.start > total * 0.92 && dur <= 120) {
-    return 'Pular cr\u00e9ditos';
+    return { label: 'Pular cr\u00e9ditos', confident: false };
   }
   return null;
 }
@@ -1874,24 +2062,18 @@ function chapterSkipLabel(chap, allChaps, totalDuration) {
 function detectSkippableChapter(absSec) {
   const cur = player.current;
   if (!cur || !cur.chapters || !cur.chapters.length) return;
-  // Toggle global: usuario pode desligar nas configs
   if (cur.skipIntroEnabled === false) { hideSkipBtn(); return; }
   const chap = cur.chapters.find((c) => absSec >= c.start && absSec < c.end);
   if (!chap) { hideSkipBtn(); return; }
-  const label = chapterSkipLabel(chap, cur.chapters, cur.duration);
-  if (!label) { hideSkipBtn(); return; }
-  // Se usuario ja dispensou (cancelou) esse capitulo, nao mostra de novo
+  const info = chapterSkipLabel(chap, cur.chapters, cur.duration);
+  if (!info) { hideSkipBtn(); return; }
   if (cur.skipDismissed[chap.start] === 'dismissed') { hideSkipBtn(); return; }
-  // Mostra o botao durante TODA a duracao do capitulo (usuario pode clicar
-  // a qualquer momento). O countdown so eh disparado uma vez (na primeira
-  // entrada). Se ja expirou/dispensou, esconde.
-  showSkipBtn(label, chap);
+  showSkipBtn(info.label, chap, info.confident);
 }
 
-function showSkipBtn(label, chap) {
+function showSkipBtn(label, chap, confident) {
   const btn = document.getElementById('playerSkipBtn');
   if (!btn) return;
-  // Ja visivel pra esse capitulo? mantem
   if (btn.dataset.chapStart === String(chap.start) && !btn.classList.contains('hidden')) return;
   btn.dataset.chapStart = String(chap.start);
   btn.classList.remove('hidden');
@@ -1899,9 +2081,31 @@ function showSkipBtn(label, chap) {
   const cdEl = document.getElementById('playerSkipCountdown');
   if (cdEl) cdEl.textContent = '';
   if (player.skipTimer) { clearInterval(player.skipTimer); player.skipTimer = null; }
-  // Auto-skip removido: a heuristica de capitulos do MKV pode errar
-  // (capitulos genericos sem nomes semanticos). Usuario precisa clicar
-  // manualmente — evita pular pra meio do episodio sem querer.
+
+  const cur = player.current;
+  // Auto-skip pra qualquer abertura/recap detectada (nome OU heuristica posicional).
+  // Creditos NUNCA auto-skip — usuario pode querer ver cena pos-creditos.
+  const canAuto = cur
+    && cur.autoSkipIntroEnabled !== false
+    && !/cr[ée]ditos/i.test(label)
+    && cur.skipDismissed[chap.start] !== 'started';
+
+  if (canAuto && cdEl) {
+    let n = Math.max(2, Math.min(20, Number(cur.autoSkipIntroSeconds) || 3));
+    cdEl.textContent = `(${n}s)`;
+    cur.skipDismissed[chap.start] = 'started';
+    player.skipTimer = setInterval(() => {
+      n -= 1;
+      cdEl.textContent = `(${n}s)`;
+      if (n <= 0) {
+        clearInterval(player.skipTimer);
+        player.skipTimer = null;
+        cdEl.textContent = '';
+        doSkip(chap);
+      }
+    }, 1000);
+  }
+
   btn.onclick = () => doSkip(chap);
 }
 
@@ -1995,8 +2199,21 @@ async function renderSettings() {
     };
   };
   wireToggle('autoNextToggle', 'autoNext');
+  wireToggle('autoDeleteWatchedToggle', 'autoDeleteWatched');
   wireToggle('autoRescanToggle', 'autoRescan');
   wireToggle('skipIntroToggle', 'skipIntro');
+  wireToggle('autoSkipIntroToggle', 'autoSkipIntro');
+  // Numero: segundos pra auto-skip
+  const autoSkipSecsEl = $('#autoSkipIntroSeconds');
+  if (autoSkipSecsEl) {
+    autoSkipSecsEl.value = Number.isFinite(cfg.autoSkipIntroSeconds) ? cfg.autoSkipIntroSeconds : 5;
+    autoSkipSecsEl.onchange = async () => {
+      const v = Math.max(2, Math.min(20, Number(autoSkipSecsEl.value) || 5));
+      autoSkipSecsEl.value = v;
+      await window.api.setNumber('autoSkipIntroSeconds', v);
+      showToast(`Auto-skip definido pra ${v}s`);
+    };
+  }
 
   // Selects de idioma padrao (audio + legenda)
   const wireLangSelect = (id, key, fallback) => {
@@ -2048,6 +2265,67 @@ function route(name) {
 }
 
 
+
+function openConfirmModal({ title = 'Confirmar ação', message = '', confirmText = 'Confirmar', cancelText = 'Cancelar', danger = false } = {}) {
+  return new Promise((resolve) => {
+    let modal = document.getElementById('confirmModal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'confirmModal';
+      modal.className = 'confirm-modal hidden';
+      modal.innerHTML = `
+        <div class="confirm-backdrop" data-confirm-cancel></div>
+        <section class="confirm-card" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+          <div class="confirm-icon" id="confirmIcon">!</div>
+          <div class="confirm-copy">
+            <h2 id="confirmTitle"></h2>
+            <p id="confirmMessage"></p>
+          </div>
+          <div class="confirm-actions">
+            <button type="button" class="confirm-cancel" data-confirm-cancel></button>
+            <button type="button" class="confirm-submit" id="confirmSubmit"></button>
+          </div>
+        </section>
+      `;
+      document.body.appendChild(modal);
+    }
+
+    const titleEl = modal.querySelector('#confirmTitle');
+    const msgEl = modal.querySelector('#confirmMessage');
+    const submit = modal.querySelector('#confirmSubmit');
+    const cancel = modal.querySelector('.confirm-cancel');
+    titleEl.textContent = title;
+    msgEl.textContent = message;
+    submit.textContent = confirmText;
+    cancel.textContent = cancelText;
+    modal.classList.toggle('is-danger', !!danger);
+    modal.classList.remove('hidden');
+    document.body.classList.add('modal-open');
+
+    let done = false;
+    const cleanup = (value) => {
+      if (done) return;
+      done = true;
+      modal.classList.add('hidden');
+      document.body.classList.remove('modal-open');
+      modal.removeEventListener('click', onClick);
+      document.removeEventListener('keydown', onKey);
+      resolve(value);
+    };
+    const onClick = (e) => {
+      if (e.target.closest('[data-confirm-cancel]')) cleanup(false);
+      if (e.target.closest('#confirmSubmit')) cleanup(true);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') cleanup(false);
+      if (e.key === 'Enter') cleanup(true);
+    };
+    modal.addEventListener('click', onClick);
+    document.addEventListener('keydown', onKey);
+    setTimeout(() => submit.focus(), 30);
+  });
+}
+
 // ---------- Profiles (web / Netflix-style gate) ----------
 let profileSelectionResolve = null;
 function ensureProfilesUi() {
@@ -2097,6 +2375,8 @@ function renderProfileGrid() {
   if (!grid) return;
   grid.innerHTML = '';
   for (const profile of state.profiles) {
+    const card = document.createElement('div');
+    card.className = 'profile-card-wrap';
     const btn = document.createElement('button');
     btn.className = 'profile-card';
     btn.type = 'button';
@@ -2105,7 +2385,45 @@ function renderProfileGrid() {
       <span class="profile-name">${escapeHtml(profile.name || 'Perfil')}</span>
     `;
     btn.addEventListener('click', () => selectProfile(profile));
-    grid.appendChild(btn);
+    card.appendChild(btn);
+    if (window.api.deleteProfile && state.profiles.length > 1) {
+      const del = document.createElement('button');
+      del.className = 'profile-delete';
+      del.type = 'button';
+      del.title = `Apagar perfil ${profile.name || 'Perfil'}`;
+      del.setAttribute('aria-label', del.title);
+      del.innerHTML = '×';
+      del.addEventListener('click', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const name = profile.name || 'Perfil';
+        const confirmed = await openConfirmModal({
+          title: `Apagar perfil ${name}?`,
+          message: 'Isso remove também o progresso salvo e o histórico desse perfil. Essa ação não afeta os outros perfis.',
+          confirmText: 'Apagar perfil',
+          cancelText: 'Cancelar',
+          danger: true,
+        });
+        if (!confirmed) return;
+        try {
+          const res = await window.api.deleteProfile(profile.id);
+          if (!res || !res.ok) throw new Error((res && res.error) || 'Falha ao apagar perfil');
+          state.profiles = state.profiles.filter((p) => p.id !== profile.id);
+          if (state.currentProfile && state.currentProfile.id === profile.id) {
+            localStorage.removeItem('mediaflix:profileId');
+            state.currentProfile = null;
+            document.getElementById('profileSwitcher')?.classList.add('hidden');
+          }
+          renderProfileGrid();
+          showToast('Perfil apagado');
+          if (!state.currentProfile) openProfileGate(true);
+        } catch (err) {
+          showToast(err.message || 'Não consegui apagar o perfil', 5000);
+        }
+      });
+      card.appendChild(del);
+    }
+    grid.appendChild(card);
   }
 }
 
@@ -2256,8 +2574,8 @@ async function init() {
   });
   window.addEventListener('pagehide', () => saveProgressBeacon('pagehide'));
   window.addEventListener('beforeunload', () => saveProgressBeacon('beforeunload'));
-  document.addEventListener('fullscreenchange', () => scheduleLandscapeRepair('fullscreenchange'));
-  document.addEventListener('webkitfullscreenchange', () => scheduleLandscapeRepair('webkitfullscreenchange'));
+  document.addEventListener('fullscreenchange', () => { scheduleLandscapeRepair('fullscreenchange'); updateFsIcon(); });
+  document.addEventListener('webkitfullscreenchange', () => { scheduleLandscapeRepair('webkitfullscreenchange'); updateFsIcon(); });
   window.addEventListener('orientationchange', () => setTimeout(() => scheduleLandscapeRepair('orientationchange'), 180));
   window.addEventListener('resize', () => syncPlayerViewportState(), { passive: true });
 
@@ -2420,6 +2738,8 @@ async function init() {
   state.library = await window.api.getLibrary();
   await renderAll();
   route('home');
+  document.body.classList.remove('app-booting');
+  document.body.classList.add('app-ready');
 
   // Versão visível + checagem de update silenciosa
   try {
@@ -2543,5 +2863,7 @@ async function init() {
 
 init().catch((e) => {
   console.error(e);
+  document.body.classList.remove('app-booting');
+  document.body.classList.add('app-ready');
   showToast('Erro ao iniciar: ' + e.message);
 });

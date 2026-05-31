@@ -27,6 +27,7 @@ const historyPath = path.join(dataDir, 'history.json');
 const profilesPath = path.join(dataDir, 'profiles.json');
 const metaCachePath = path.join(dataDir, 'meta-cache.json');
 const probeCachePath = path.join(dataDir, 'probe-cache.json');
+const imdbTitlesPath = path.join(dataDir, 'imdb-titles.json');
 const bannersDir = path.join(dataDir, 'banners');
 const thumbsDir = path.join(dataDir, 'thumbnails');
 try { fs.mkdirSync(bannersDir, { recursive: true }); } catch {}
@@ -54,13 +55,19 @@ let config = readJson(configPath, {
   autoNextSeconds: 8,
   doubleTapSeconds: 5,
   autoRescan: false,
+  autoDeleteWatched: false,
   skipIntro: true,
+  autoSkipIntro: true,
+  autoSkipIntroSeconds: 3,
   preferredAudioLang: 'pt',
   preferredSubLang: 'off',
   uploadToken: randomBytes(9).toString('hex'),
 });
 // Backfill defaults para configs antigos (preserva valores existentes)
+if (config.autoDeleteWatched === undefined) config.autoDeleteWatched = false;
 if (config.skipIntro === undefined) config.skipIntro = true;
+if (config.autoSkipIntro === undefined) config.autoSkipIntro = true;
+if (!Number.isFinite(config.autoSkipIntroSeconds)) config.autoSkipIntroSeconds = 3;
 if (!config.doubleTapSeconds) config.doubleTapSeconds = 5;
 if (!config.preferredAudioLang) config.preferredAudioLang = 'pt';
 if (!config.preferredSubLang) config.preferredSubLang = 'off';
@@ -174,6 +181,41 @@ function pickMeaningfulName(folder, watchedRoot) {
   const rootName = path.basename(watchedRoot);
   return !isTrivialTitle(cleanTitle(rootName)) ? rootName : path.basename(folder);
 }
+
+function preferEpisodeFile(a, b) {
+  const score = (ep) => {
+    const file = String(ep.file || ep.path || '').toLowerCase();
+    let n = 0;
+    if (!/\.transcoding\.mp4$/i.test(file)) n += 1000;
+    if (/\.mp4$/i.test(file)) n += 120;
+    if (/\.m4v$/i.test(file)) n += 100;
+    if (/\.webm$/i.test(file)) n += 80;
+    if (/\.mkv$/i.test(file)) n += 40;
+    if (!/sample|trailer|preview/i.test(file)) n += 20;
+    try { n += Math.min(10, fs.statSync(ep.path).size / (1024 * 1024 * 1024)); } catch {}
+    return n;
+  };
+  return score(b) > score(a) ? b : a;
+}
+function dedupeSeasonEpisodes(episodes) {
+  const byKey = new Map();
+  const noNumber = [];
+  for (const ep of episodes || []) {
+    if (/\.transcoding\.mp4$/i.test(ep.file || ep.path || '')) continue;
+    const n = Number(ep.episodeNum);
+    if (Number.isFinite(n) && n > 0) {
+      const key = String(n);
+      byKey.set(key, byKey.has(key) ? preferEpisodeFile(byKey.get(key), ep) : ep);
+    } else {
+      const key = String(ep.path || ep.file || '');
+      if (!byKey.has('path:' + key)) noNumber.push(ep);
+      byKey.set('path:' + key, ep);
+    }
+  }
+  const numbered = Array.from(byKey.entries()).filter(([k]) => !k.startsWith('path:')).map(([, ep]) => ep);
+  return [...numbered, ...noNumber];
+}
+
 function scanLibrary() {
   const seriesByKey = new Map();
   const movies = [];
@@ -224,7 +266,7 @@ function scanLibrary() {
           if (!season) { season = { number: sNum, folder: full, episodes: [] }; series.seasons.set(sNum, season); }
           season.episodes.push({ path: v, file: path.basename(v), episodeNum: det.episode });
         }
-      } else if (VIDEO_EXT.has(path.extname(e.name).toLowerCase())) {
+      } else if (VIDEO_EXT.has(path.extname(e.name).toLowerCase()) && !/\.transcoding\.mp4$/i.test(e.name)) {
         const det = detectSeasonAndEpisode(e.name);
         if (det.season != null || det.episode != null) {
           const parsed = parseFile(e.name) || {};
@@ -246,6 +288,7 @@ function scanLibrary() {
   }
   const series = Array.from(seriesByKey.values()).map((s) => {
     const seasons = Array.from(s.seasons.values()).sort((a, b) => a.number - b.number).map((season) => {
+      season.episodes = dedupeSeasonEpisodes(season.episodes);
       season.episodes.sort((a, b) => (a.episodeNum || 9999) - (b.episodeNum || 9999) || naturalSort(a.file, b.file));
       season.episodes = season.episodes.map((ep, i) => ({ ...ep, season: season.number, episode: ep.episodeNum || i + 1, index: i + 1, title: ep.title || cleanEpisodeTitle(ep.file) || cleanTitle(ep.file) }));
       return season;
@@ -290,6 +333,76 @@ function scanLibrary() {
               if (entry.stillPath) ep.stillPath = entry.stillPath;
             }
           }
+          // Preenche EPISODIOS faltantes da temporada (que existem no TMDB
+          // mas nao no disco) como placeholders `missing:true` — sem path,
+          // pra UI mostrar cinza/indisponivel mas o usuario ja ver o que
+          // a serie tem.
+          const haveEpNums = new Set(season.episodes.map((e) => Number(e.episode)).filter(Number.isFinite));
+          for (const epNumStr of Object.keys(epMap)) {
+            const epNum = Number(epNumStr);
+            if (!Number.isFinite(epNum) || epNum <= 0) continue;
+            if (haveEpNums.has(epNum)) continue;
+            const entry = epMap[epNumStr];
+            const ph = {
+              missing: true,
+              season: season.number,
+              episode: epNum,
+              index: epNum,
+              file: null,
+              path: null,
+              title: (entry && entry.name) || `Episódio ${epNum}`,
+              overview: (entry && entry.overview) || '',
+              airDate: (entry && entry.airDate) || null,
+              stillPath: (entry && entry.stillPath) || null,
+            };
+            season.episodes.push(ph);
+          }
+          season.episodes.sort((a, b) => (Number(a.episode) || 9999) - (Number(b.episode) || 9999));
+        }
+        // Cria TEMPORADAS inteiras que existem no TMDB mas nao temos
+        // localmente (ex: usuario so subiu S01 mas ja existem S02, S03 na serie).
+        const haveSeasonNums = new Set(seasons.map((s) => Number(s.number)));
+        for (const sNumStr of Object.keys(meta.episodes)) {
+          const sNum = Number(sNumStr);
+          if (!Number.isFinite(sNum) || sNum <= 0) continue;
+          if (haveSeasonNums.has(sNum)) continue;
+          const epMap = meta.episodes[sNumStr] || {};
+          const eps = Object.keys(epMap)
+            .map((k) => Number(k))
+            .filter((n) => Number.isFinite(n) && n > 0)
+            .sort((a, b) => a - b)
+            .map((epNum) => {
+              const entry = epMap[epNum] || epMap[String(epNum)] || {};
+              return {
+                missing: true,
+                season: sNum,
+                episode: epNum,
+                index: epNum,
+                file: null,
+                path: null,
+                title: entry.name || `Episódio ${epNum}`,
+                overview: entry.overview || '',
+                airDate: entry.airDate || null,
+                stillPath: entry.stillPath || null,
+              };
+            });
+          if (eps.length) seasons.push({ number: sNum, folder: null, episodes: eps, missing: true });
+        }
+        seasons.sort((a, b) => a.number - b.number);
+      }
+      if (meta.imdb) {
+        extra.imdbId = meta.imdb.id || meta.imdbId || extra.imdbId || null;
+        extra.imdbRating = typeof meta.imdb.average === 'number' ? meta.imdb.average : null;
+        extra.imdbSource = meta.imdb.source || 'imdb';
+        if (meta.imdb.seasons) {
+          for (const season of seasons) {
+            const rMap = meta.imdb.seasons[season.number] || meta.imdb.seasons[String(season.number)];
+            if (!rMap) continue;
+            for (const ep of season.episodes) {
+              const r = rMap[ep.episode] ?? rMap[String(ep.episode)] ?? rMap[ep.index] ?? rMap[String(ep.index)];
+              if (typeof r === 'number') ep.imdbRating = r;
+            }
+          }
         }
       }
     }
@@ -305,6 +418,7 @@ function scanLibrary() {
     m.overview = meta.overview || null;
     m.year = meta.year || null;
     m.imdbId = meta.imdbId || (meta.imdb && meta.imdb.id) || null;
+    if (meta.imdb) { m.imdbRating = typeof meta.imdb.average === 'number' ? meta.imdb.average : null; m.imdbSource = meta.imdb.source || 'imdb'; }
   }
   libraryCache = [...series, ...movies].sort((a, b) => a.title.localeCompare(b.title));
   return libraryCache;
@@ -579,6 +693,46 @@ async function listProfiles() {
   }
   return fallbackProfiles().map(publicProfile);
 }
+
+async function deleteProfile(profileId) {
+  const id = String(profileId || '').slice(0, 80);
+  if (!id) return { ok: false, error: 'Perfil inválido.' };
+  const db = await getDb();
+  if (db) {
+    const total = await db.collection('profiles').countDocuments();
+    if (total <= 1) return { ok: false, error: 'Crie outro perfil antes de apagar o último.' };
+    const found = await db.collection('profiles').findOne({ id });
+    if (!found) return { ok: false, error: 'Perfil não encontrado.' };
+    await Promise.all([
+      db.collection('profiles').deleteOne({ id }),
+      db.collection('watch_progress').deleteMany({ profileId: id }),
+      db.collection('watch_history').deleteMany({ profileId: id }),
+    ]);
+    return { ok: true, deletedId: id, storage: 'mongo' };
+  }
+  const list = fallbackProfiles();
+  if (list.length <= 1) return { ok: false, error: 'Crie outro perfil antes de apagar o último.' };
+  const idx = list.findIndex((p) => p.id === id);
+  if (idx < 0) return { ok: false, error: 'Perfil não encontrado.' };
+  list.splice(idx, 1);
+  delete progress[id];
+  delete history[id];
+  saveProfiles();
+  saveProgress();
+  saveHistory();
+  return { ok: true, deletedId: id, storage: 'json' };
+}
+async function storageStatus() {
+  const db = await getDb();
+  if (!db) return { ok: true, storage: 'json', mongo: false, dataDir };
+  const [profilesCount, progressCount, historyCount] = await Promise.all([
+    db.collection('profiles').countDocuments(),
+    db.collection('watch_progress').countDocuments(),
+    db.collection('watch_history').countDocuments(),
+  ]);
+  return { ok: true, storage: 'mongo', mongo: true, db: db.databaseName, collections: { profiles: profilesCount, watch_progress: progressCount, watch_history: historyCount } };
+}
+
 async function createProfile(data) {
   const now = Date.now();
   const profile = {
@@ -674,6 +828,91 @@ async function clearHistoryFor(profileId) {
 }
 
 
+
+async function deleteMediaFile(filePath) {
+  const p = safeExistingFile(filePath);
+  if (!p) return { ok: false, error: 'Arquivo não encontrado ou fora das pastas permitidas.' };
+  if (!VIDEO_EXT.has(path.extname(p).toLowerCase())) return { ok: false, error: 'Só vídeos podem ser apagados por aqui.' };
+  let size = 0;
+  try { size = fs.statSync(p).size || 0; } catch {}
+  try {
+    fs.unlinkSync(p);
+  } catch (e) {
+    return { ok: false, error: 'Não consegui apagar o arquivo: ' + e.message };
+  }
+  const db = await getDb();
+  if (db) {
+    await Promise.all([
+      db.collection('watch_progress').deleteMany({ path: p }),
+      db.collection('watch_history').deleteMany({ path: p }),
+    ]);
+  } else {
+    for (const profileId of Object.keys(progress || {})) delete progress[profileId][p];
+    for (const profileId of Object.keys(history || {})) delete history[profileId][p];
+    saveProgress();
+    saveHistory();
+  }
+  libraryCache = null;
+  return { ok: true, path: p, deletedBytes: size, library: scanLibrary() };
+}
+
+// Decisão pura (testável) de auto-exclusão a partir do progresso de TODOS os
+// perfis para um mesmo ficheiro. `progressByProfile` = { profileId: ratio }.
+// Regras (ver spec 2026-05-31-auto-delete-watched-design):
+//  - perfil atual precisa estar assistido (ratio >= 0.90) => garante que o
+//    processo de assistir foi gravado no banco antes de apagar;
+//  - nenhum OUTRO perfil pode estar a meio (0.05 < ratio < 0.90).
+const AUTO_DELETE_WATCHED_RATIO = 0.90;
+const AUTO_DELETE_STARTED_RATIO = 0.05;
+function shouldAutoDelete(progressByProfile, currentProfileId) {
+  const cur = Number(progressByProfile && progressByProfile[currentProfileId]) || 0;
+  if (cur < AUTO_DELETE_WATCHED_RATIO) return { ok: false, reason: 'not-finished' };
+  for (const [pid, ratioRaw] of Object.entries(progressByProfile || {})) {
+    if (pid === currentProfileId) continue;
+    const ratio = Number(ratioRaw) || 0;
+    if (ratio > AUTO_DELETE_STARTED_RATIO && ratio < AUTO_DELETE_WATCHED_RATIO) {
+      return { ok: false, reason: 'in-use-by-other' };
+    }
+  }
+  return { ok: true };
+}
+
+// Lê o ratio (time/length) de progresso de cada perfil para um único path.
+async function progressRatiosForPath(filePath) {
+  const ratios = {};
+  const db = await getDb();
+  if (db) {
+    const docs = await db.collection('watch_progress').find({ path: filePath }).toArray();
+    for (const d of docs) {
+      const len = Number(d.length) || 0;
+      ratios[d.profileId] = len > 0 ? (Number(d.time) || 0) / len : 0;
+    }
+  } else {
+    for (const [profileId, store] of Object.entries(progress || {})) {
+      const e = store && store[filePath];
+      if (!e) continue;
+      const len = Number(e.length) || 0;
+      ratios[profileId] = len > 0 ? (Number(e.time) || 0) / len : 0;
+    }
+  }
+  return ratios;
+}
+
+// Verifica e (se for o caso) apaga um episódio já assistido. Toda a decisão é
+// feita no servidor a partir do banco; o cliente só passa o path e o perfil.
+async function autoDeleteWatchedFile(filePath, profileId) {
+  if (!config.autoDeleteWatched) return { ok: true, deleted: false, reason: 'disabled' };
+  const p = safeExistingFile(filePath);
+  if (!p) return { ok: true, deleted: false, reason: 'invalid' };
+  if (!VIDEO_EXT.has(path.extname(p).toLowerCase())) return { ok: true, deleted: false, reason: 'invalid' };
+  const ratios = await progressRatiosForPath(p);
+  const decision = shouldAutoDelete(ratios, String(profileId || 'default'));
+  if (!decision.ok) return { ok: true, deleted: false, reason: decision.reason };
+  const del = await deleteMediaFile(p);
+  if (!del.ok) return { ok: false, deleted: false, reason: 'delete-failed', error: del.error };
+  return { ok: true, deleted: true, deletedBytes: del.deletedBytes, library: del.library, path: p };
+}
+
 function safeRelativeUploadPath(name) {
   let rel = String(name || 'arquivo').replace(/\\/g, '/').replace(/^\/+/, '');
   rel = rel.split('/').filter((part) => part && part !== '.' && part !== '..').join('/');
@@ -704,6 +943,128 @@ function readRaw(req) {
     req.on('error', reject);
   });
 }
+
+// ---------- IMDb ratings (web backend) ----------
+const IMDB_DATA_BASE = 'https://cdn.jsdelivr.net/gh/mokronos/imdb-heatmap@main/data';
+function imdbNormalize(s) {
+  return String(s || '').toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, '');
+}
+let imdbTitleIndex = null;
+async function getImdbTitleIndex() {
+  const cached = readJson(imdbTitlesPath, null);
+  const now = Date.now();
+  if (cached && cached.fetchedAt && now - cached.fetchedAt < 7 * 24 * 3600 * 1000 && cached.map) {
+    if (!imdbTitleIndex) imdbTitleIndex = new Map(Object.entries(cached.map));
+    return imdbTitleIndex;
+  }
+  const json = await httpsGetJson(`${IMDB_DATA_BASE}/titleId.json`);
+  const map = {};
+  if (Array.isArray(json)) {
+    for (const r of json) {
+      if (!r || !r.title || !r.id) continue;
+      const k = imdbNormalize(r.title);
+      if (k && !map[k]) map[k] = r.id;
+      if (r.year) {
+        const ky = imdbNormalize(`${r.title} ${r.year}`);
+        if (ky && !map[ky]) map[ky] = r.id;
+      }
+    }
+  } else if (json && typeof json === 'object') {
+    for (const [t, id] of Object.entries(json)) {
+      const k = imdbNormalize(t);
+      if (k && !map[k]) map[k] = id;
+    }
+  }
+  writeJson(imdbTitlesPath, { fetchedAt: now, map });
+  imdbTitleIndex = new Map(Object.entries(map));
+  return imdbTitleIndex;
+}
+function findImdbIdForTitle(title, year) {
+  if (!imdbTitleIndex) return null;
+  const variants = [title];
+  if (year) variants.unshift(`${title} ${year}`);
+  for (const v of variants) {
+    const id = imdbTitleIndex.get(imdbNormalize(v));
+    if (id) return id;
+  }
+  return null;
+}
+async function fetchImdbRatings(imdbId) {
+  try {
+    const seasons = await httpsGetJson(`${IMDB_DATA_BASE}/${imdbId}.json`);
+    const seasonMap = {};
+    let total = 0, count = 0;
+    if (Array.isArray(seasons)) {
+      seasons.forEach((eps, sIdx) => {
+        const epMap = {};
+        (eps || []).forEach((ep, eIdx) => {
+          const r = ep && Number(ep.rating);
+          if (Number.isFinite(r) && r > 0) {
+            epMap[eIdx + 1] = +r.toFixed(1);
+            total += r;
+            count++;
+          }
+        });
+        if (Object.keys(epMap).length) seasonMap[sIdx + 1] = epMap;
+      });
+    }
+    return { id: imdbId, average: count ? +(total / count).toFixed(2) : null, seasons: seasonMap };
+  } catch {
+    return { id: imdbId, average: null, seasons: {} };
+  }
+}
+async function resolveTmdbAverage(cached, kind) {
+  if (!config.tmdbKey || !cached || !cached.tmdbId) return null;
+  try {
+    const lang = encodeURIComponent(config.tmdbLang || 'pt-BR');
+    const det = await httpsGetJson(`https://api.themoviedb.org/3/${kind}/${cached.tmdbId}?api_key=${config.tmdbKey}&language=${lang}`);
+    if (typeof det.vote_average === 'number' && det.vote_average > 0) return +det.vote_average.toFixed(1);
+  } catch {}
+  return null;
+}
+async function fetchAllImdbRatings() {
+  await getImdbTitleIndex();
+  const items = scanLibrary();
+  let updated = 0, missing = 0, skipped = 0;
+  for (const it of items) {
+    const key = groupKeyFromName(it.title) || it.id;
+    const cached = metaCache[key] || {};
+    const kind = cached.type || (it.type === 'series' ? 'tv' : 'movie');
+    if (cached.imdb && cached.imdb.average != null && cached.imdb.seasons) { skipped++; continue; }
+    let id = cached.imdbId || (cached.imdb && cached.imdb.id) || it.imdbId || null;
+    if (!id && config.tmdbKey && cached.tmdbId) {
+      try {
+        const lang = encodeURIComponent(config.tmdbLang || 'pt-BR');
+        const ext = await httpsGetJson(`https://api.themoviedb.org/3/${kind}/${cached.tmdbId}/external_ids?api_key=${config.tmdbKey}&language=${lang}`);
+        if (ext && ext.imdb_id) id = ext.imdb_id;
+      } catch {}
+    }
+    if (!id) id = findImdbIdForTitle(it.title, it.year);
+    if (!id) { missing++; continue; }
+    const data = await fetchImdbRatings(id);
+    if (!data || data.average == null) {
+      const tmdbAvg = await resolveTmdbAverage(cached, kind);
+      if (tmdbAvg != null) {
+        metaCache[key] = { ...cached, imdbId: id, imdb: { id, average: tmdbAvg, source: 'tmdb', seasons: {} } };
+        updated++;
+      } else {
+        metaCache[key] = { ...cached, imdbId: id, imdb: { id, average: null, source: 'imdb', seasons: {} } };
+        missing++;
+      }
+    } else {
+      metaCache[key] = { ...cached, imdbId: id, imdb: { ...data, source: 'imdb' } };
+      updated++;
+    }
+    await new Promise((r) => setTimeout(r, 40));
+  }
+  saveMetaCache();
+  libraryCache = null;
+  return { ok: true, updated, missing, skipped, library: scanLibrary() };
+}
+
 // ---------- Auto-transcode MKV/AVI → MP4 com chapters preservados ----------
 // Faz remux quando possível (H.264 + AAC) e re-encode quando necessário.
 // Sempre preserva metadados de capítulos (-map_chapters 0).
@@ -1066,6 +1427,8 @@ async function api(req, res, u) {
   if (u.pathname === '/api/folders' && req.method === 'DELETE') { config.folders = config.folders.filter((f) => f !== u.searchParams.get('folder')); saveConfig(); return json(res, 200, { ok: true, library: scanLibrary() }); }
   if (u.pathname === '/api/profiles' && req.method === 'GET') return json(res, 200, { ok: true, profiles: await listProfiles(), storage: (await getDb()) ? 'mongo' : 'json' });
   if (u.pathname === '/api/profiles' && req.method === 'POST') return json(res, 200, { ok: true, profile: await createProfile(await parseBody(req)) });
+  if (u.pathname === '/api/profiles' && req.method === 'DELETE') { const r = await deleteProfile(u.searchParams.get('id')); return json(res, r.ok ? 200 : 400, r); }
+  if (u.pathname === '/api/storage/status') return json(res, 200, await storageStatus());
   if (u.pathname === '/api/progress' && req.method === 'GET') return json(res, 200, await getProgressFor(profileIdFrom(u)));
   if (u.pathname === '/api/progress' && req.method === 'POST') { const b = await parseBody(req); let saved = false; if (safeExistingFile(b.path)) saved = await saveProgressFor(profileIdFrom(u, b), b.path, b.time, b.length, b.updatedAt); return json(res, 200, { ok: true, saved }); }
   if (u.pathname === '/api/progress' && req.method === 'DELETE') { await clearProgressFor(profileIdFrom(u), u.searchParams.get('path')); return json(res, 200, { ok: true }); }
@@ -1074,6 +1437,8 @@ async function api(req, res, u) {
   if (u.pathname === '/api/history/open') { const b = await parseBody(req); if (safeExistingFile(b.path)) await logOpenFor(profileIdFrom(u, b), b.path); return json(res, 200, { ok: true }); }
   if (u.pathname === '/api/history/close') { const b = await parseBody(req); await logCloseFor(profileIdFrom(u, b), b.path); return json(res, 200, { ok: true }); }
   if (u.pathname === '/api/play') { const b = await parseBody(req); const p = safeExistingFile(b.path); if (!p) return json(res, 404, { ok: false, error: 'Arquivo não encontrado/autorizado.' }); return json(res, 200, { ok: true, embedded: true, url: `/api/stream?f=${encodeURIComponent(p)}` }); }
+  if (u.pathname === '/api/media-file' && req.method === 'DELETE') { const r = await deleteMediaFile(u.searchParams.get('path')); return json(res, r.ok ? 200 : 400, r); }
+  if (u.pathname === '/api/auto-delete-check' && req.method === 'POST') { const b = await parseBody(req); const r = await autoDeleteWatchedFile(b.path, profileIdFrom(u, b)); return json(res, r.ok ? 200 : 400, r); }
   if (u.pathname === '/api/stream') return streamVideo(req, res, u.searchParams.get('f'), u);
   if (u.pathname === '/api/image') { const p = safeExistingFile(u.searchParams.get('path')); if (!p || !IMAGE_EXT.has(path.extname(p).toLowerCase())) return json(res, 404, { data: null }); const ext = path.extname(p).slice(1).replace('jpg', 'jpeg'); return json(res, 200, { data: `data:image/${ext};base64,${fs.readFileSync(p).toString('base64')}` }); }
   if (u.pathname === '/api/player/probe') {
@@ -1084,12 +1449,14 @@ async function api(req, res, u) {
       preferredAudioLang: config.preferredAudioLang || 'pt',
       preferredSubLang: config.preferredSubLang || 'off',
       skipIntro: !!config.skipIntro,
+      autoSkipIntro: !!config.autoSkipIntro,
+      autoSkipIntroSeconds: Number.isFinite(config.autoSkipIntroSeconds) ? config.autoSkipIntroSeconds : 3,
     });
   }
   if (u.pathname === '/api/player/sidecars') { const p = safeExistingFile(u.searchParams.get('path')); if (!p) return json(res, 404, { ok: false, subs: [] }); const dir = path.dirname(p); const base = path.basename(p, path.extname(p)).toLowerCase(); const subs = fs.readdirSync(dir).filter((e) => SUBTITLE_EXT.has(path.extname(e).toLowerCase())).filter((e) => e.toLowerCase().startsWith(base) || fs.readdirSync(dir).length < 20).map((e) => { const lang = detectSubLang(e); return { path: path.join(dir, e), label: langLabel(lang), lang, ext: path.extname(e).toLowerCase() }; }); return json(res, 200, { ok: true, subs }); }
   if (u.pathname === '/api/player/extract-sub') return json(res, 200, { ok: false, error: 'Legenda embutida ainda não habilitada na versão web.' });
-  if (u.pathname === '/api/config/toggle') { const b = await parseBody(req); if (['embeddedPlayer', 'autoNext', 'autoRescan', 'skipIntro'].includes(b.key)) config[b.key] = !!b.value; saveConfig(); return json(res, 200, { ok: true }); }
-  if (u.pathname === '/api/config/number') { const b = await parseBody(req); if (b.key === 'autoNextSeconds') config.autoNextSeconds = Math.max(3, Math.min(30, Number(b.value) || 8)); if (b.key === 'doubleTapSeconds') config.doubleTapSeconds = Math.max(3, Math.min(30, Number(b.value) || 5)); saveConfig(); return json(res, 200, { ok: true }); }
+  if (u.pathname === '/api/config/toggle') { const b = await parseBody(req); if (['embeddedPlayer', 'autoNext', 'autoRescan', 'autoDeleteWatched', 'skipIntro', 'autoSkipIntro'].includes(b.key)) config[b.key] = !!b.value; saveConfig(); return json(res, 200, { ok: true }); }
+  if (u.pathname === '/api/config/number') { const b = await parseBody(req); if (b.key === 'autoNextSeconds') config.autoNextSeconds = Math.max(3, Math.min(30, Number(b.value) || 8)); if (b.key === 'doubleTapSeconds') config.doubleTapSeconds = Math.max(3, Math.min(30, Number(b.value) || 5)); if (b.key === 'autoSkipIntroSeconds') config.autoSkipIntroSeconds = Math.max(2, Math.min(20, Number(b.value) || 3)); saveConfig(); return json(res, 200, { ok: true }); }
   if (u.pathname === '/api/config/string') {
     const b = await parseBody(req);
     const allowed = ['preferredAudioLang', 'preferredSubLang'];
@@ -1133,6 +1500,7 @@ async function api(req, res, u) {
     libraryCache = null;
     return json(res, 200, { ok: true, updated, failed, library: scanLibrary() });
   }
+  if (u.pathname === '/api/imdb/fetch-all' && req.method === 'POST') { try { return json(res, 200, await fetchAllImdbRatings()); } catch (e) { return json(res, 500, { ok: false, error: e.message }); } }
   if (u.pathname === '/api/meta/clear' && req.method === 'POST') {
     metaCache = {}; saveMetaCache(); libraryCache = null;
     return json(res, 200, { ok: true, library: scanLibrary() });
@@ -1203,21 +1571,25 @@ function serveStatic(req, res, u) {
   fs.readFile(file, (err, buf) => {
     if (err) return text(res, 404, 'not found');
     const ext = path.extname(file).toLowerCase();
-    const type = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' }[ext] || 'application/octet-stream';
+    const type = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.webp': 'image/webp', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg' }[ext] || 'application/octet-stream';
     res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-store, no-cache, must-revalidate' }); res.end(buf);
   });
 }
 
-http.createServer(async (req, res) => {
+const mediaflixServer = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     if (u.pathname.startsWith('/api/')) return api(req, res, u);
     return serveStatic(req, res, u);
   } catch (e) { return text(res, 500, String(e && e.stack || e)); }
-}).listen(PORT, HOST, () => {
-  console.log(`Mediaflix web rodando em http://${HOST}:${PORT}`);
-  console.log(`Pastas configuradas: ${config.folders.length ? config.folders.join(', ') : '(nenhuma)'}`);
 });
+if (require.main === module) {
+  mediaflixServer.listen(PORT, HOST, () => {
+    console.log(`Mediaflix web rodando em http://${HOST}:${PORT}`);
+    console.log(`Pastas configuradas: ${config.folders.length ? config.folders.join(', ') : '(nenhuma)'}`);
+  });
+}
+module.exports = { shouldAutoDelete };
 
 // Limpeza periodica de uploads orfaos (> 24h) — evita encher o disco quando
 // um upload chunked eh abandonado no meio (ex.: usuario fecha a aba).
@@ -1248,7 +1620,9 @@ function cleanupStaleUploads() {
     console.warn('[uploads] cleanup falhou:', e.message);
   }
 }
-setInterval(cleanupStaleUploads, 60 * 60 * 1000); // hora em hora
-setTimeout(cleanupStaleUploads, 10 * 1000); // tambem 10s apos boot
-// Boot: enfileira MKV/AVI/etc. existentes para conversão automática
-setTimeout(() => { try { scanAndEnqueueExisting(); } catch (e) { console.error('[transcode boot]', e.message); } }, 15 * 1000);
+if (require.main === module) {
+  setInterval(cleanupStaleUploads, 60 * 60 * 1000); // hora em hora
+  setTimeout(cleanupStaleUploads, 10 * 1000); // tambem 10s apos boot
+  // Boot: enfileira MKV/AVI/etc. existentes para conversão automática
+  setTimeout(() => { try { scanAndEnqueueExisting(); } catch (e) { console.error('[transcode boot]', e.message); } }, 15 * 1000);
+}
