@@ -1075,6 +1075,67 @@ const TRANSCODE_CONCURRENCY = Math.max(1, parseInt(process.env.TRANSCODE_CONCURR
 let transcodeRunning = 0;
 const transcodeStatus = new Map(); // path -> { state, progress, error, startedAt }
 
+// Progresso de uploads (chunked) por uploadId, para que QUALQUER dispositivo
+// (ex.: celular) possa acompanhar o % de um envio iniciado noutro device.
+const activeUploads = new Map(); // uploadId -> { id, startedAt, updatedAt, completedAt, totalBytes, receivedBytes, totalFiles, files: {fileIndex:{name,size,received,totalChunks,done}} }
+
+function trackUploadChunk({ uploadId, fileIndex, rel, totalChunks, totalFiles, totalBytes, fileSize, bytes, final }) {
+  let up = activeUploads.get(uploadId);
+  if (!up) {
+    up = { id: uploadId, startedAt: Date.now(), updatedAt: Date.now(), completedAt: 0, totalBytes: 0, receivedBytes: 0, totalFiles: 0, files: {} };
+    activeUploads.set(uploadId, up);
+  }
+  up.updatedAt = Date.now();
+  if (totalBytes > 0) up.totalBytes = totalBytes;
+  if (totalFiles > 0) up.totalFiles = totalFiles;
+  let f = up.files[fileIndex];
+  if (!f) { f = { name: rel, size: fileSize || 0, received: 0, totalChunks: totalChunks || 1, done: false }; up.files[fileIndex] = f; }
+  f.name = rel || f.name;
+  if (fileSize > 0) f.size = fileSize;
+  if (totalChunks > 0) f.totalChunks = totalChunks;
+  f.received += bytes || 0;
+  up.receivedBytes += bytes || 0;
+  if (final) f.done = true;
+  const filesDone = Object.values(up.files).filter((x) => x.done).length;
+  if (up.totalFiles > 0 && filesDone >= up.totalFiles) up.completedAt = Date.now();
+  pruneUploads();
+}
+
+function pruneUploads() {
+  const now = Date.now();
+  for (const [id, up] of activeUploads) {
+    const stale = now - up.updatedAt > 5 * 60 * 1000; // 5min sem chunk
+    const finishedAgo = up.completedAt && now - up.completedAt > 30 * 1000; // some 30s apos concluir
+    if (stale || finishedAgo) activeUploads.delete(id);
+  }
+}
+
+function activeUploadsList() {
+  pruneUploads();
+  return Array.from(activeUploads.values()).map((up) => {
+    const filesDone = Object.values(up.files).filter((x) => x.done).length;
+    let pct;
+    if (up.completedAt) pct = 100;
+    else if (up.totalBytes > 0) pct = Math.max(0, Math.min(99, Math.round((up.receivedBytes / up.totalBytes) * 100)));
+    else pct = null;
+    // Ficheiro "atual": o último não concluído com mais bytes recebidos.
+    const pending = Object.values(up.files).filter((x) => !x.done).sort((a, b) => b.received - a.received);
+    const current = (pending[0] && pending[0].name) || (Object.values(up.files).slice(-1)[0] || {}).name || '';
+    return {
+      id: up.id,
+      percent: pct,
+      receivedBytes: up.receivedBytes,
+      totalBytes: up.totalBytes,
+      totalFiles: up.totalFiles,
+      filesDone,
+      current: current ? String(current).split('/').pop() : '',
+      completed: !!up.completedAt,
+      startedAt: up.startedAt,
+      updatedAt: up.updatedAt,
+    };
+  }).sort((a, b) => b.startedAt - a.startedAt);
+}
+
 const NEEDS_TRANSCODE = new Set(['.mkv', '.avi', '.flv', '.wmv', '.ts']);
 
 // Spawn ffmpeg com prioridade BAIXA (nice +19 = ultima fila do scheduler)
@@ -1292,15 +1353,28 @@ async function handleChunkUpload(req, res, u) {
   const chunkIndex = Number(u.searchParams.get('chunkIndex') || 0);
   const totalChunks = Number(u.searchParams.get('totalChunks') || 1);
   const rel = safeRelativeUploadPath(u.searchParams.get('path') || 'arquivo');
+  const totalFiles = Number(u.searchParams.get('totalFiles') || 0);
+  const totalBytes = Number(u.searchParams.get('totalBytes') || 0);
+  const fileSize = Number(u.searchParams.get('fileSize') || 0);
   if (!uploadId || !Number.isFinite(chunkIndex) || !Number.isFinite(totalChunks)) return json(res, 400, { ok: false, error: 'Chunk inválido.' });
 
   const tmpDir = path.join(dataDir, 'uploads', uploadId);
   fs.mkdirSync(tmpDir, { recursive: true });
   const tmpFile = path.join(tmpDir, `${fileIndex}.part`);
   const body = await readRaw(req);
-  fs.appendFileSync(tmpFile, body);
+  try {
+    fs.appendFileSync(tmpFile, body);
+  } catch (e) {
+    // Disco cheio (ENOSPC) ou outro erro de escrita: limpa o parcial e devolve
+    // erro limpo em vez de deixar a exceção derrubar o servidor inteiro.
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    activeUploads.delete(uploadId);
+    const full = e && e.code === 'ENOSPC';
+    return json(res, full ? 507 : 500, { ok: false, error: full ? 'Sem espaço em disco no servidor. Libere espaço antes de continuar o upload.' : ('Falha ao gravar: ' + (e && e.message || e)) });
+  }
 
   const final = chunkIndex + 1 >= totalChunks;
+  trackUploadChunk({ uploadId, fileIndex, rel, totalChunks, totalFiles, totalBytes, fileSize, bytes: body.length, final });
   if (!final) return json(res, 200, { ok: true, final: false, received: body.length });
 
   const dest = uniquePath(path.join(targetRoot, rel));
@@ -1415,6 +1489,7 @@ function serveThumbnail(req, res, u) {
 async function api(req, res, u) {
   if (u.pathname === '/api/thumbnail' || u.pathname === '/api/thumb') return serveThumbnail(req, res, u);
   if (u.pathname === '/api/upload-token' && req.method === 'GET') return json(res, 200, { ok: true, token: config.uploadToken });
+  if (u.pathname === '/api/uploads/active' && req.method === 'GET') return json(res, 200, { ok: true, uploads: activeUploadsList() });
   if (u.pathname === '/api/upload-chunk' && req.method === 'POST') return handleChunkUpload(req, res, u);
   if (u.pathname === '/api/upload' && req.method === 'POST') return handleUpload(req, res, u);
   if (u.pathname === '/api/library') return json(res, 200, scanLibrary());
@@ -1579,10 +1654,16 @@ function serveStatic(req, res, u) {
 const mediaflixServer = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    if (u.pathname.startsWith('/api/')) return api(req, res, u);
-    return serveStatic(req, res, u);
-  } catch (e) { return text(res, 500, String(e && e.stack || e)); }
+    if (u.pathname.startsWith('/api/')) return await api(req, res, u);
+    return await serveStatic(req, res, u);
+  } catch (e) {
+    try { return text(res, 500, String(e && e.stack || e)); } catch { /* resposta já enviada */ }
+  }
 });
+// Rede de segurança: um erro inesperado num handler (ex.: disco cheio) não pode
+// derrubar o MediaFlix inteiro para todos os utilizadores.
+process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e && e.stack || e));
+process.on('uncaughtException', (e) => console.error('[uncaughtException]', e && e.stack || e));
 if (require.main === module) {
   mediaflixServer.listen(PORT, HOST, () => {
     console.log(`Mediaflix web rodando em http://${HOST}:${PORT}`);

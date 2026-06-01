@@ -2527,6 +2527,72 @@ async function uploadSelectedFiles(fileList) {
   }
 }
 
+// ---------- Monitor flutuante de uploads (visível em qualquer dispositivo) ----------
+// O progresso é lido do servidor (/api/uploads/active), então um upload começado
+// no PC aparece também no celular, e vice-versa.
+function ensureUploadMonitor() {
+  let el = document.getElementById('uploadMonitor');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'uploadMonitor';
+  el.style.cssText = 'position:fixed;z-index:9000;right:16px;bottom:16px;max-width:min(86vw,340px);background:rgba(20,20,22,.96);color:#fff;border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:12px 14px;box-shadow:0 12px 34px rgba(0,0,0,.55);font-size:13px;cursor:pointer;backdrop-filter:blur(8px);display:none';
+  el.innerHTML = ''
+    + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
+    + '<span style="display:inline-flex;width:18px;height:18px;align-items:center;justify-content:center;color:#f59e0b">\u2b06</span>'
+    + '<strong id="umTitle" style="font-weight:700;font-size:13px">Enviando\u2026</strong>'
+    + '<span id="umPct" style="margin-left:auto;font-weight:800;font-variant-numeric:tabular-nums"></span>'
+    + '</div>'
+    + '<div style="height:6px;border-radius:99px;background:rgba(255,255,255,.14);overflow:hidden">'
+    + '<div id="umBar" style="height:100%;width:0%;background:linear-gradient(90deg,#e11d48,#f59e0b);transition:width .3s"></div>'
+    + '</div>'
+    + '<div id="umMeta" style="margin-top:7px;color:rgba(255,255,255,.72);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>';
+  el.title = 'Toque para abrir a área de uploads';
+  el.addEventListener('click', () => route('settings'));
+  document.body.appendChild(el);
+  return el;
+}
+
+function renderUploadMonitor(uploads) {
+  const el = ensureUploadMonitor();
+  const active = Array.isArray(uploads) ? uploads : [];
+  if (!active.length) { el.style.display = 'none'; return; }
+  const totalBytes = active.reduce((s, u) => s + (u.totalBytes || 0), 0);
+  const recvBytes = active.reduce((s, u) => s + (u.receivedBytes || 0), 0);
+  const totalFiles = active.reduce((s, u) => s + (u.totalFiles || 0), 0);
+  const filesDone = active.reduce((s, u) => s + (u.filesDone || 0), 0);
+  const allCompleted = active.every((u) => u.completed);
+  let pct = totalBytes > 0 ? Math.round((recvBytes / totalBytes) * 100) : null;
+  if (allCompleted) pct = 100;
+  if (pct != null) pct = Math.max(0, Math.min(100, pct));
+  const cur = active.find((u) => !u.completed && u.current) || active[0] || {};
+  document.getElementById('umTitle').textContent = allCompleted ? 'Upload conclu\u00eddo \u2713' : 'Enviando para o servidor';
+  document.getElementById('umPct').textContent = pct == null ? '' : pct + '%';
+  document.getElementById('umBar').style.width = (pct == null ? 0 : pct) + '%';
+  const parts = [];
+  if (totalFiles) parts.push(`${filesDone}/${totalFiles} arquivo(s)`);
+  if (cur.current && !allCompleted) parts.push(cur.current);
+  if (totalBytes) parts.push(`${formatBytes(recvBytes)} / ${formatBytes(totalBytes)}`);
+  document.getElementById('umMeta').textContent = parts.join(' \u00b7 ');
+  el.style.display = 'block';
+}
+
+async function pollActiveUploads() {
+  if (!window.api.getActiveUploads) return;
+  try {
+    const r = await window.api.getActiveUploads();
+    const uploads = (r && r.uploads) || [];
+    renderUploadMonitor(uploads);
+    // Quando um upload conclui, a biblioteca muda — refresca uma vez de leve.
+    if (uploads.some((u) => u.completed) && !state._uploadRefreshed) {
+      state._uploadRefreshed = true;
+      state.library = await window.api.getLibrary();
+      state.imageCache && state.imageCache.clear && state.imageCache.clear();
+      await renderRows();
+      setTimeout(() => { state._uploadRefreshed = false; }, 10000);
+    }
+  } catch (e) { /* silencioso */ }
+}
+
 // ---------- Bootstrap ----------
 async function renderAll() {
   [state.progress, state.history] = await Promise.all([
@@ -2733,6 +2799,10 @@ async function init() {
     ]);
     await renderRows();
   }, 6000);
+
+  // Monitor de uploads em tempo real (funciona entre dispositivos: PC <-> celular)
+  setInterval(pollActiveUploads, 2500);
+  pollActiveUploads();
 
   // Initial load
   state.library = await window.api.getLibrary();

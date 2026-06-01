@@ -54,6 +54,7 @@
     autoDeleteWatched: (p) => post('/api/auto-delete-check', bodyWithProfile({ path: p })),
 
     getUploadToken: () => request('/api/upload-token'),
+    getActiveUploads: () => request('/api/uploads/active'),
     play: async (p) => {
       const res = await post('/api/play', { path: p });
       if (res && res.url && BASE && res.url.startsWith('/api/')) res.url = BASE + res.url;
@@ -84,6 +85,9 @@
             chunkIndex: String(chunkIndex),
             totalChunks: String(totalChunks),
             path: relPath,
+            totalFiles: String(list.length),
+            totalBytes: String(totalBytes),
+            fileSize: String(file.size || 0),
           });
           const res = await fetch(apiPath('/api/upload-chunk?' + qs.toString()), {
             method: 'POST',
