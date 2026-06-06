@@ -39,7 +39,7 @@ const SUBTITLE_EXT = new Set(['.srt', '.vtt', '.ass', '.ssa']);
 const NATIVE_VIDEO = new Set(['.mp4', '.webm', '.m4v', '.mov']);
 
 function readJson(file, fallback) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { console.warn('[mediaflix] falha ao ler JSON:', file, e.message); return fallback; }
 }
 function writeJson(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -105,7 +105,7 @@ async function getDb() {
     return mongo.db;
   } catch (e) {
     mongo.failed = true;
-    console.warn('[mongo] usando fallback JSON:', e.message);
+    console.warn('[mongo] falha ao conectar:', process.env.MEDIAFLIX_MONGODB_URL || 'mongodb://127.0.0.1:27017', '—', e.message);
     return null;
   }
 }
@@ -123,7 +123,7 @@ function parseBody(req) {
   return new Promise((resolve) => {
     let raw = '';
     req.on('data', (d) => raw += d);
-    req.on('end', () => { try { resolve(raw ? JSON.parse(raw) : {}); } catch { resolve({}); } });
+    req.on('end', () => { try { resolve(raw ? JSON.parse(raw) : {}); } catch (e) { console.warn('[mediaflix] falha ao parsear JSON do request:', e.message); resolve({}); } });
   });
 }
 function normalize(p) { return path.resolve(String(p || '')); }
@@ -561,14 +561,14 @@ async function buildMetaFromTmdbId(tmdbId, type, neededSeasons) {
       const ext = path.extname(j.backdrop_path) || '.jpg';
       const fname = 'bd_' + Buffer.from(j.backdrop_path).toString('base64url') + ext;
       result.banner = await downloadToBanners(`https://image.tmdb.org/t/p/w1280${j.backdrop_path}`, fname);
-    } catch {}
+    } catch (e) { console.warn('[tmdb] falha ao baixar backdrop:', j.backdrop_path, '—', e.message); }
   }
   if (j.poster_path) {
     try {
       const ext = path.extname(j.poster_path) || '.jpg';
       const fname = 'p_' + Buffer.from(j.poster_path).toString('base64url') + ext;
       result.poster = await downloadToBanners(`https://image.tmdb.org/t/p/w500${j.poster_path}`, fname);
-    } catch {}
+    } catch (e) { console.warn('[tmdb] falha ao baixar poster:', j.poster_path, '—', e.message); }
   }
   if (type === 'tv' && Array.isArray(j.seasons)) {
     const want = j.seasons.map((s) => s.season_number).filter((n) => n != null && n > 0).filter((n) => !neededSeasons || neededSeasons.includes(n));
@@ -582,7 +582,7 @@ async function buildMetaFromTmdbId(tmdbId, type, neededSeasons) {
         }
         result.episodes[sn] = map;
         await new Promise((r) => setTimeout(r, 150));
-      } catch {}
+      } catch (e) { console.warn('[tmdb] falha ao buscar season', sn, 'para tmdbId', tmdbId, '—', e.message); }
     }
   }
   return result;
@@ -604,7 +604,7 @@ async function tmdbLookup(title, type) {
       try {
         const j = await httpsGetJson(`https://api.themoviedb.org/3/search/${type}?api_key=${config.tmdbKey}&language=${l}&query=${q}&include_adult=false`);
         if (j.results && j.results.length) { first = j.results[0]; break; }
-      } catch {}
+      } catch (e) { console.warn('[tmdb] falha ao procurar:', v, 'tipo:', type, 'lang:', l, '—', e.message); }
     }
     if (first) break;
   }
@@ -834,7 +834,7 @@ async function deleteMediaFile(filePath) {
   if (!p) return { ok: false, error: 'Arquivo não encontrado ou fora das pastas permitidas.' };
   if (!VIDEO_EXT.has(path.extname(p).toLowerCase())) return { ok: false, error: 'Só vídeos podem ser apagados por aqui.' };
   let size = 0;
-  try { size = fs.statSync(p).size || 0; } catch {}
+  try { size = fs.statSync(p).size || 0; } catch (e) { console.warn('[mediaflix] falha ao stat arquivo:', p, '—', e.message); }
   try {
     fs.unlinkSync(p);
   } catch (e) {
@@ -1022,7 +1022,7 @@ async function resolveTmdbAverage(cached, kind) {
     const lang = encodeURIComponent(config.tmdbLang || 'pt-BR');
     const det = await httpsGetJson(`https://api.themoviedb.org/3/${kind}/${cached.tmdbId}?api_key=${config.tmdbKey}&language=${lang}`);
     if (typeof det.vote_average === 'number' && det.vote_average > 0) return +det.vote_average.toFixed(1);
-  } catch {}
+  } catch (e) { console.warn('[tmdb] falha ao resolver rating para', kind, ':', cached.tmdbId, '—', e.message); }
   return null;
 }
 async function fetchAllImdbRatings() {
@@ -1040,7 +1040,7 @@ async function fetchAllImdbRatings() {
         const lang = encodeURIComponent(config.tmdbLang || 'pt-BR');
         const ext = await httpsGetJson(`https://api.themoviedb.org/3/${kind}/${cached.tmdbId}/external_ids?api_key=${config.tmdbKey}&language=${lang}`);
         if (ext && ext.imdb_id) id = ext.imdb_id;
-      } catch {}
+      } catch (e) { console.warn('[tmdb] falha ao resolver external_ids para', kind, ':', cached.tmdbId, '—', e.message); }
     }
     if (!id) id = findImdbIdForTitle(it.title, it.year);
     if (!id) { missing++; continue; }
@@ -1209,7 +1209,7 @@ function transcodeOne(srcPath) {
       videoHeight = v && v.height ? Number(v.height) : 0;
       const aStreams = (probeRaw.streams || []).filter((s) => s.codec_type === 'audio');
       aStreams.forEach((s, i) => { audioCodecs[i] = s.codec_name || ''; });
-    } catch {}
+    } catch (e) { console.warn('[ffprobe] falha ao detectar codecs:', srcPath, '—', e.message); }
 
     const canCopyVideo = /^(h264|avc)$/i.test(videoCodec);
     const allAudiosCanCopy = audioCodecs.length > 0 && audioCodecs.every((c) => /^(aac|mp3)$/i.test(c));
@@ -1285,7 +1285,7 @@ function transcodeOne(srcPath) {
     });
     proc.on('exit', (code) => {
       if (code !== 0) {
-        try { fs.unlinkSync(tmpDest); } catch {}
+        try { fs.unlinkSync(tmpDest); } catch (e) { console.warn('[mediaflix] falha ao limpar tmp após ffmpeg error:', tmpDest, '—', e.message); }
         transcodeStatus.set(srcPath, { state: 'error', error: 'ffmpeg exit ' + code, endedAt: Date.now() });
         return reject(new Error('ffmpeg exit ' + code));
       }
@@ -1310,7 +1310,7 @@ function transcodeOne(srcPath) {
           probeCache[finalDest] = { ...(probeCache[finalDest] || {}), originalBackup: backupPath };
         } catch (e) {
           // Falha em backup — apaga mesmo assim pra liberar espaço
-          try { fs.unlinkSync(srcPath); } catch {}
+          try { fs.unlinkSync(srcPath); } catch (e) { console.warn('[mediaflix] falha ao apagar original após transcode:', srcPath, '—', e.message); }
         }
         probeMemCache.delete(srcPath);
         probeMemCache.delete(finalDest);
@@ -1367,7 +1367,7 @@ async function handleChunkUpload(req, res, u) {
   } catch (e) {
     // Disco cheio (ENOSPC) ou outro erro de escrita: limpa o parcial e devolve
     // erro limpo em vez de deixar a exceção derrubar o servidor inteiro.
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (ce) { console.warn('[mediaflix] falha ao limpar tmpDir após erro de upload:', tmpDir, '—', ce.message); }
     activeUploads.delete(uploadId);
     const full = e && e.code === 'ENOSPC';
     return json(res, full ? 507 : 500, { ok: false, error: full ? 'Sem espaço em disco no servidor. Libere espaço antes de continuar o upload.' : ('Falha ao gravar: ' + (e && e.message || e)) });
@@ -1381,7 +1381,7 @@ async function handleChunkUpload(req, res, u) {
   if (!isInside(dest, targetRoot)) return json(res, 400, { ok: false, error: 'Destino inválido.' });
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.renameSync(tmpFile, dest);
-  try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) { console.warn('[mediaflix] falha ao cleanup tmpDir:', tmpDir, '—', e.message); }
   libraryCache = null;
   enqueueTranscode(dest);
   return json(res, 200, { ok: true, final: true, saved: path.relative(targetRoot, dest), library: scanLibrary() });
