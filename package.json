@@ -6,7 +6,8 @@
   "scripts": {
     "start": "electron .",
     "web": "node server.js",
-    "build": "electron-builder --win"
+    "build": "electron-builder --win",
+    "test": "node --test test/*.test.js"
   },
   "author": "",
   "license": "MIT",
