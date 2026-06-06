@@ -18,6 +18,8 @@ const {
   isTrivialTitle,
 } = require('./titleParser');
 
+const pkg = require('./package.json');
+
 const PORT = Number(process.env.PORT || 3088);
 const HOST = process.env.HOST || '0.0.0.0';
 const dataDir = process.env.MEDIAFLIX_DATA_DIR || path.join(__dirname, '.mediaflix-data');
@@ -1494,6 +1496,7 @@ async function api(req, res, u) {
   if (u.pathname === '/api/upload' && req.method === 'POST') return handleUpload(req, res, u);
   if (u.pathname === '/api/library') return json(res, 200, scanLibrary());
   if (u.pathname === '/api/config') { const safe = { ...config }; delete safe.uploadToken; return json(res, 200, { ...safe, vlcPath: '', web: true, uploads: true }); }
+  if (u.pathname === '/api/version' && req.method === 'GET') return json(res, 200, { version: pkg.version, name: pkg.name });
   if (u.pathname === '/api/folders' && req.method === 'POST') {
     const { folder } = await parseBody(req); const p = normalize(folder);
     try { if (!fs.statSync(p).isDirectory()) return json(res, 400, { ok: false, error: 'Pasta não existe no servidor.' }); } catch { return json(res, 400, { ok: false, error: 'Pasta não existe no servidor.' }); }
