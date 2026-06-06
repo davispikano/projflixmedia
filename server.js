@@ -37,6 +37,11 @@ const VIDEO_EXT = new Set(['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.m4v', '.web
 const IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp']);
 const SUBTITLE_EXT = new Set(['.srt', '.vtt', '.ass', '.ssa']);
 const NATIVE_VIDEO = new Set(['.mp4', '.webm', '.m4v', '.mov']);
+const ALLOWED_UPLOAD_EXT = new Set([
+  ...VIDEO_EXT,
+  ...IMAGE_EXT,
+  ...SUBTITLE_EXT,
+]);
 
 function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
@@ -1353,6 +1358,10 @@ async function handleChunkUpload(req, res, u) {
   const chunkIndex = Number(u.searchParams.get('chunkIndex') || 0);
   const totalChunks = Number(u.searchParams.get('totalChunks') || 1);
   const rel = safeRelativeUploadPath(u.searchParams.get('path') || 'arquivo');
+  const uploadExt = path.extname(rel || '').toLowerCase();
+  if (!ALLOWED_UPLOAD_EXT.has(uploadExt)) {
+    return json(res, 400, { ok: false, error: `Extensão não permitida: ${uploadExt}` });
+  }
   const totalFiles = Number(u.searchParams.get('totalFiles') || 0);
   const totalBytes = Number(u.searchParams.get('totalBytes') || 0);
   const fileSize = Number(u.searchParams.get('fileSize') || 0);
@@ -1402,6 +1411,11 @@ function handleUpload(req, res, u) {
   });
   bb.on('file', (_field, file, info) => {
     const rel = safeRelativeUploadPath(pendingPaths.shift() || info.filename);
+    const uploadExt = path.extname(rel || '').toLowerCase();
+    if (!ALLOWED_UPLOAD_EXT.has(uploadExt)) {
+      file.resume();
+      return;
+    }
     const dest = uniquePath(path.join(targetRoot, rel));
     if (!isInside(dest, targetRoot)) { file.resume(); return; }
     fs.mkdirSync(path.dirname(dest), { recursive: true });
