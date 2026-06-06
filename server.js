@@ -88,9 +88,11 @@ let history = readJson(historyPath, {});
 let profiles = readJson(profilesPath, []);
 let libraryCache = null;
 
-const mongo = { client: null, db: null, failed: false };
+const mongo = { client: null, db: null, failedAt: 0 };
+const MONGO_RETRY_MS = 30_000;
 async function getDb() {
-  if (!MongoClient || mongo.failed) return null;
+  if (!MongoClient) return null;
+  if (mongo.failedAt && Date.now() - mongo.failedAt < MONGO_RETRY_MS) return null;
   if (mongo.db) return mongo.db;
   try {
     const url = process.env.MEDIAFLIX_MONGODB_URL || 'mongodb://127.0.0.1:27017';
@@ -102,10 +104,13 @@ async function getDb() {
       mongo.db.collection('watch_progress').createIndex({ profileId: 1, path: 1 }, { unique: true }),
       mongo.db.collection('watch_history').createIndex({ profileId: 1, path: 1 }, { unique: true }),
     ]);
+    mongo.failedAt = 0;
     return mongo.db;
   } catch (e) {
-    mongo.failed = true;
-    console.warn('[mongo] usando fallback JSON:', e.message);
+    mongo.failedAt = Date.now();
+    mongo.db = null;
+    if (mongo.client) { try { mongo.client.close(); } catch {} mongo.client = null; }
+    console.warn('[mongo] usando fallback JSON (retry em 30s):', e.message);
     return null;
   }
 }
