@@ -2871,7 +2871,11 @@ async function init() {
         row.style.opacity = visible ? '' : '0.35';
       });
     };
-    searchInput.addEventListener('input', applyFilter);
+    let _searchDebounceTimer = null;
+    searchInput.addEventListener('input', () => {
+      clearTimeout(_searchDebounceTimer);
+      _searchDebounceTimer = setTimeout(applyFilter, 180);
+    });
     document.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
         e.preventDefault();
