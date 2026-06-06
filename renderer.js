@@ -12,6 +12,14 @@ const state = {
   imageCache: new Map(),
 };
 
+const IMAGE_CACHE_MAX = 200;
+function imageCacheSet(key, val) {
+  if (state.imageCache.size >= IMAGE_CACHE_MAX) {
+    state.imageCache.delete(state.imageCache.keys().next().value);
+  }
+  state.imageCache.set(key, val);
+}
+
 // ---------- Helpers ----------
 function fmtTime(seconds) {
   if (!seconds || seconds < 0) return '0:00';
@@ -83,7 +91,7 @@ async function loadImage(filePath) {
   if (!filePath) return null;
   if (state.imageCache.has(filePath)) return state.imageCache.get(filePath);
   const data = await window.api.readImage(filePath);
-  state.imageCache.set(filePath, data);
+  imageCacheSet(filePath, data);
   return data;
 }
 

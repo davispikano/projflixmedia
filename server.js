@@ -431,6 +431,13 @@ try { ffprobeStaticPath = require('ffprobe-static').path; } catch {}
 const getFfmpegPath = () => ffmpegStaticPath;
 const getFfprobePath = () => ffprobeStaticPath;
 const probeMemCache = new Map();
+const PROBE_MEM_CACHE_MAX = 500;
+function probeMemSet(key, val) {
+  if (probeMemCache.size >= PROBE_MEM_CACHE_MAX) {
+    probeMemCache.delete(probeMemCache.keys().next().value);
+  }
+  probeMemCache.set(key, val);
+}
 function probeFile(filePath) {
   return new Promise((resolve) => {
     const p = safeExistingFile(filePath);
@@ -459,7 +466,7 @@ function probeFile(filePath) {
           chapters = probeCache[p].chapters;
         }
         const out = { audio, subs, duration: duration || (probeCache[p] && probeCache[p].duration) || 0, chapters };
-        probeMemCache.set(p, out);
+        probeMemSet(p, out);
         resolve(out);
       } catch {
         const cached = probeCache[p];
