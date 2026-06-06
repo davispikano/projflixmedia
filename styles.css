@@ -590,25 +590,41 @@ main {
 .detail {
   position: fixed; inset: 0; z-index: 80;
   overflow-y: auto;
+  background: #000;
   animation: detail-in 0.4s var(--spring);
 }
 @keyframes detail-in {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
+/* Banner agora vive no fluxo do scroll: fica no topo, "estatico" enquanto
+   nada se mexe, mas some pra cima naturalmente quando o usuario desce. */
 .detail-bg {
-  position: fixed; inset: 0;
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 62vh;
+  min-height: 360px;
   background-size: cover;
-  background-position: center 20%;
-  filter: blur(20px) saturate(120%);
-  transform: scale(1.08);
-  z-index: -2;
+  background-position: center 22%;
+  z-index: 0;
+  pointer-events: none;
 }
 .detail-shade {
-  position: fixed; inset: 0;
-  background: linear-gradient(180deg, rgba(10,10,11,0.85) 0%, rgba(10,10,11,0.95) 100%);
-  z-index: -1;
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: calc(62vh + 80px);
+  min-height: calc(360px + 80px);
+  background: linear-gradient(
+    180deg,
+    rgba(0,0,0,0.20) 0%,
+    rgba(0,0,0,0.35) 35%,
+    rgba(0,0,0,0.78) 78%,
+    #000 100%
+  );
+  z-index: 1;
+  pointer-events: none;
 }
+.detail-inner { position: relative; z-index: 2; }
 .detail-close {
   position: fixed; top: 18px; right: 22px;
   background: rgba(10,10,11,0.6);
@@ -619,6 +635,7 @@ main {
   display: inline-flex; align-items: center; justify-content: center;
   transition: background 0.2s var(--spring), transform 0.15s var(--spring);
   z-index: 5;
+  z-index: 5;
 }
 .detail-close:hover { background: rgba(255,255,255,0.1); }
 .detail-close:active { transform: scale(0.94); }
@@ -626,7 +643,23 @@ main {
 .detail-inner {
   max-width: 1080px;
   margin: 0 auto;
-  padding: 80px 40px 80px;
+  padding: 46vh 40px 0;
+  position: relative;
+  z-index: 2;
+}
+.detail-head { margin-bottom: 0 !important; padding-bottom: 28px; }
+/* Prateleira preta que comeca colada no head e segue ate o fim da pagina.
+   Full-bleed: usa 100vw com margens negativas pra cobrir alem do max-width. */
+.detail-episodes-shelf {
+  position: relative;
+  z-index: 3;
+  background: #000;
+  margin: 0 calc(50% - 50vw) 0;
+  padding: 24px calc(50vw - 540px + 40px) 80px;
+  min-height: 60vh;
+}
+@media (max-width: 1120px) {
+  .detail-episodes-shelf { padding: 24px 40px 80px; }
 }
 .detail-head {
   display: grid;
@@ -907,7 +940,8 @@ main {
   .row-head, .row-track { padding-left: 20px; padding-right: 20px; }
   .card { flex-basis: 220px; }
   .settings { padding: 24px 20px 60px; }
-  .detail-inner { padding: 64px 20px; }
+  .detail-inner { padding: 44vh 20px 0; }
+  .detail-episodes-shelf { margin: 0 -20px; padding: 22px 20px 60px; }
   .detail-head { grid-template-columns: 1fr; }
 }
 /* ========== Toggles, radios, embedded player ========== */
@@ -1099,7 +1133,7 @@ main {
 @keyframes spin { to { transform:rotate(360deg); } }
 
 /* ---------- Painel lateral de Episódios (estilo Netflix) ---------- */
-.player-eps { position:absolute; top:0; right:0; bottom:0; width:min(440px, 92vw); background:rgba(10,10,12,0.97); border-left:1px solid var(--line-strong); z-index:40; display:flex; flex-direction:column; transform:translateX(0); transition:transform .28s cubic-bezier(.2,.7,.2,1); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px); box-shadow:-20px 0 60px -10px rgba(0,0,0,.7); }
+.player-eps { position:absolute; top:0; right:0; bottom:0; width:min(440px, 92vw); background:#0a0a0c; border-left:1px solid var(--line-strong); z-index:40; display:flex; flex-direction:column; transform:translateX(0); transition:transform .28s cubic-bezier(.2,.7,.2,1); box-shadow:-20px 0 60px -10px rgba(0,0,0,.7); }
 .player-eps.hidden { transform:translateX(100%); pointer-events:none; }
 .player-eps-head { display:flex; align-items:center; gap:12px; padding:16px 18px; border-bottom:1px solid var(--line); background:linear-gradient(to bottom, rgba(0,0,0,.6), transparent); }
 .player-eps-title { font-size:18px; font-weight:700; color:#fff; flex:0 0 auto; }
@@ -1319,13 +1353,14 @@ main {
     height: 42px;
     background: rgba(10,10,11,0.82);
   }
-  .detail-inner { padding: 72px 18px 56px; }
+  .detail-inner { padding: 36dvh 18px 0; }
   .detail-head {
     display: flex;
     flex-direction: column;
     align-items: stretch;
     gap: 18px;
-    margin-bottom: 28px;
+    margin-bottom: 0;
+    padding-bottom: 22px;
   }
   .detail-head h1 {
     font-size: clamp(32px, 11vw, 46px);
@@ -1781,25 +1816,30 @@ body.profile-locked { overflow: hidden; }
   .row.grid .card-meta { padding-top: 48px; }
   .row.grid .card-sub { display:none; }
 
-  .detail { background: #09090a; }
+  .detail { background: #000; }
   .detail-bg {
-    position: fixed;
+    position: absolute;
     top: 0; left: 0; right: 0; bottom: auto;
-    height: 58dvh;
+    height: 50dvh;
+    min-height: 280px;
     filter: none;
     transform: none;
-    opacity: .9;
-    background-position: center top;
-    z-index: -2;
+    opacity: 1;
+    background-position: center 20%;
+    z-index: 0;
   }
   .detail-shade {
-    background:
-      linear-gradient(180deg, rgba(5,5,6,.12) 0%, rgba(5,5,6,.24) 30%, rgba(10,10,11,.84) 62%, #09090a 100%),
-      linear-gradient(90deg, rgba(0,0,0,.72), transparent 56%, rgba(0,0,0,.2));
+    height: calc(50dvh + 60px);
+    min-height: calc(280px + 60px);
+    background: linear-gradient(180deg, rgba(0,0,0,.20) 0%, rgba(0,0,0,.40) 35%, rgba(0,0,0,.82) 78%, #000 100%);
   }
   .detail-inner {
     min-height: 100dvh;
-    padding: calc(44dvh + 20px) 18px calc(96px + env(safe-area-inset-bottom));
+    padding: 34dvh 18px 0;
+  }
+  .detail-episodes-shelf {
+    margin: 0 -18px;
+    padding: 20px 18px calc(96px + env(safe-area-inset-bottom));
   }
   .detail-head h1 {
     max-width: 12ch;
@@ -2197,7 +2237,7 @@ body.profile-locked { overflow: hidden; }
   }
 
   .player-eps {
-    background:rgba(10,10,12,.94);
+    background:#0a0a0c;
   }
   .player-eps-list {
     display:flex;
@@ -2778,4 +2818,542 @@ body.profile-locked { overflow: hidden; }
     background:rgba(225,29,72,.13);
     border-color:rgba(225,29,72,.34);
   }
+}
+
+/* Boot loader: hides the static fallback hero until the real library has rendered. */
+body.app-booting {
+  overflow: hidden;
+  background: #050507;
+}
+body.app-booting .topbar,
+body.app-booting .mobile-tabbar,
+body.app-booting #app,
+body.app-booting .grain {
+  opacity: 0;
+  pointer-events: none;
+}
+.boot-loader {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at 50% 18%, rgba(229, 9, 20, .18), transparent 34%),
+    linear-gradient(180deg, #07070a 0%, #030305 100%);
+  color: #fff;
+  transition: opacity .28s ease, visibility .28s ease;
+}
+.boot-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 18px;
+  border: 1px solid rgba(255,255,255,.10);
+  border-radius: 22px;
+  background: rgba(12,12,16,.72);
+  box-shadow: 0 24px 80px rgba(0,0,0,.45);
+  backdrop-filter: blur(18px);
+}
+.boot-mark {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, #e50914, #7c1118);
+  font-weight: 900;
+  letter-spacing: -.04em;
+  box-shadow: 0 12px 34px rgba(229,9,20,.35);
+}
+.boot-copy { display: grid; gap: 2px; }
+.boot-copy strong { font-size: 15px; letter-spacing: .01em; }
+.boot-copy span { color: rgba(255,255,255,.62); font-size: 12px; }
+body.app-ready .boot-loader,
+body:not(.app-booting) .boot-loader {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* ---------- MediaFlix identity system ---------- */
+:root {
+  --brand-red: #e50914;
+  --brand-red-deep: #7f111a;
+  --brand-cream: #f4efe7;
+  --brand-ink: #050507;
+  --brand-panel: rgba(18, 16, 20, .78);
+  --brand-glow: 0 22px 70px rgba(229, 9, 20, .24);
+}
+
+body {
+  background:
+    radial-gradient(900px 420px at 18% -10%, rgba(229, 9, 20, .13), transparent 62%),
+    radial-gradient(760px 520px at 85% 6%, rgba(255, 255, 255, .045), transparent 64%),
+    linear-gradient(180deg, #08080b 0%, #050507 46%, #09080a 100%);
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.014) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(circle at 50% 0%, black 0%, transparent 72%);
+}
+
+.topbar {
+  background:
+    linear-gradient(180deg, rgba(6,6,9,.92), rgba(6,6,9,.64) 78%, transparent),
+    radial-gradient(520px 180px at 44px 0, rgba(229,9,20,.18), transparent 70%);
+}
+
+.brand { gap: 13px; min-width: 188px; }
+.brand-mark {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  border-radius: 13px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background:
+    linear-gradient(145deg, rgba(255,255,255,.12), transparent 34%),
+    linear-gradient(135deg, #19171d, #08080b 64%);
+  border: 1px solid rgba(255,255,255,.13);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.18), var(--brand-glow);
+}
+.brand-mark span {
+  position: relative;
+  z-index: 2;
+  transform: translateX(-2px);
+  font-size: 20px;
+  font-weight: 900;
+  letter-spacing: -.09em;
+  color: var(--brand-cream);
+}
+.brand-mark::before {
+  content: '';
+  position: absolute;
+  inset: -30%;
+  background: radial-gradient(circle at 26% 16%, rgba(229,9,20,.55), transparent 40%);
+}
+.brand-mark::after {
+  content: '';
+  position: absolute;
+  right: 7px;
+  top: 11px;
+  width: 0;
+  height: 0;
+  border-top: 8px solid transparent;
+  border-bottom: 8px solid transparent;
+  border-left: 12px solid var(--brand-red);
+  filter: drop-shadow(0 0 12px rgba(229,9,20,.55));
+}
+.brand-copy { display: grid; gap: 1px; line-height: 1; }
+.brand-name {
+  font-size: 20px;
+  font-weight: 900;
+  letter-spacing: -.055em;
+  color: var(--brand-cream);
+}
+.brand-tagline {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: rgba(244,239,231,.46);
+}
+
+.nav-link.active {
+  background: rgba(229, 9, 20, .14);
+  box-shadow: inset 0 0 0 1px rgba(229,9,20,.18);
+}
+.btn-primary {
+  background:
+    linear-gradient(135deg, #ff2430, #ad101c 68%, #720c14);
+  box-shadow: 0 16px 42px rgba(229,9,20,.22), inset 0 1px 0 rgba(255,255,255,.20);
+}
+.btn-primary:hover { transform: translateY(-1px); box-shadow: 0 20px 54px rgba(229,9,20,.30), inset 0 1px 0 rgba(255,255,255,.22); }
+.topbar-search, .card, .empty-card, .settings-panel, .detail-panel, .modal-card {
+  background-color: rgba(18, 17, 22, .72);
+  border-color: rgba(255,255,255,.085);
+}
+
+.hero::after {
+  content: 'MF';
+  position: absolute;
+  right: clamp(22px, 6vw, 92px);
+  bottom: clamp(18px, 7vw, 88px);
+  z-index: 1;
+  font-size: clamp(72px, 14vw, 190px);
+  font-weight: 900;
+  letter-spacing: -.12em;
+  color: transparent;
+  -webkit-text-stroke: 1px rgba(255,255,255,.10);
+  opacity: .65;
+  pointer-events: none;
+}
+.hero-mobile-brand {
+  align-items: center;
+  gap: 8px;
+}
+.hero-mobile-brand em {
+  font-style: normal;
+  margin-left: 4px;
+  padding-left: 8px;
+  border-left: 1px solid rgba(255,255,255,.16);
+  color: rgba(244,239,231,.52);
+  font-size: 10px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+.kicker, .page-kicker {
+  color: #ff4b55;
+  text-shadow: 0 0 24px rgba(229,9,20,.35);
+}
+
+.boot-mark {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(145deg, #1a171d, #07070a) !important;
+  border: 1px solid rgba(255,255,255,.14);
+}
+.boot-mark::after {
+  content: '';
+  position: absolute;
+  right: 9px;
+  top: 14px;
+  width: 0;
+  height: 0;
+  border-top: 8px solid transparent;
+  border-bottom: 8px solid transparent;
+  border-left: 12px solid var(--brand-red);
+}
+
+@media (max-width: 760px) {
+  .brand { min-width: auto; }
+  .brand-tagline { display: none; }
+  .brand-mark { width: 34px; height: 34px; border-radius: 12px; }
+}
+
+/* Profile management + M-only mark */
+.brand-mark::after,
+.boot-mark::after { display: none !important; }
+.brand-mark span { transform: none; letter-spacing: -.08em; }
+.profile-card-wrap { position: relative; min-width: 0; }
+.profile-card-wrap .profile-card { width: 100%; }
+.profile-delete {
+  position: absolute;
+  top: -8px;
+  right: calc(50% - min(12vw, 75px) - 10px);
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(255,255,255,.14);
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: rgba(8,8,11,.82);
+  color: rgba(255,255,255,.72);
+  font-size: 22px;
+  line-height: 1;
+  box-shadow: 0 14px 34px rgba(0,0,0,.32);
+  backdrop-filter: blur(10px);
+  transition: transform .18s var(--spring), background .18s var(--spring), color .18s var(--spring), border-color .18s var(--spring);
+}
+.profile-delete:hover,
+.profile-delete:focus-visible {
+  transform: scale(1.06);
+  background: rgba(229,9,20,.94);
+  color: #fff;
+  border-color: rgba(255,255,255,.28);
+}
+@media (max-width: 560px) {
+  .profile-delete { right: calc(50% - min(24vw, 75px) - 8px); }
+}
+
+/* Native-app confirmation modal */
+body.modal-open { overflow: hidden; }
+.confirm-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+}
+.confirm-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(2,2,4,.74);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+.confirm-card {
+  position: relative;
+  width: min(430px, 100%);
+  border-radius: 28px;
+  border: 1px solid rgba(255,255,255,.12);
+  background:
+    radial-gradient(420px 180px at 50% 0%, rgba(229,9,20,.18), transparent 66%),
+    rgba(15,14,18,.94);
+  box-shadow: 0 34px 110px rgba(0,0,0,.62), inset 0 1px 0 rgba(255,255,255,.08);
+  padding: 24px;
+  color: var(--text);
+  animation: confirm-in .22s var(--spring);
+}
+.confirm-icon {
+  width: 46px;
+  height: 46px;
+  border-radius: 16px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 18px;
+  background: rgba(255,255,255,.08);
+  border: 1px solid rgba(255,255,255,.10);
+  color: rgba(255,255,255,.82);
+  font-weight: 900;
+}
+.confirm-modal.is-danger .confirm-icon {
+  background: rgba(229,9,20,.16);
+  border-color: rgba(229,9,20,.28);
+  color: #ff6b73;
+}
+.confirm-copy h2 {
+  margin: 0;
+  font-size: 25px;
+  line-height: 1.05;
+  letter-spacing: -.04em;
+}
+.confirm-copy p {
+  margin: 10px 0 0;
+  color: rgba(255,255,255,.62);
+  line-height: 1.48;
+  font-size: 14px;
+}
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 24px;
+}
+.confirm-actions button {
+  min-height: 42px;
+  border-radius: 999px;
+  padding: 0 17px;
+  font-weight: 800;
+  border: 1px solid rgba(255,255,255,.12);
+}
+.confirm-cancel {
+  background: rgba(255,255,255,.06);
+  color: rgba(255,255,255,.78);
+}
+.confirm-submit {
+  background: #f4efe7;
+  color: #08080b;
+  box-shadow: 0 16px 44px rgba(255,255,255,.08);
+}
+.confirm-modal.is-danger .confirm-submit {
+  background: linear-gradient(135deg, #ff3340, #b70f1d);
+  color: #fff;
+  box-shadow: 0 18px 48px rgba(229,9,20,.24);
+}
+.confirm-actions button:hover { transform: translateY(-1px); }
+.confirm-actions button:active { transform: translateY(0) scale(.98); }
+.confirm-actions button:focus-visible { outline: 2px solid rgba(255,255,255,.72); outline-offset: 3px; }
+@keyframes confirm-in {
+  from { opacity: 0; transform: translateY(10px) scale(.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@media (max-width: 520px) {
+  .confirm-card { border-radius: 24px; padding: 20px; }
+  .confirm-actions { display: grid; grid-template-columns: 1fr; }
+  .confirm-submit { order: -1; }
+}
+
+/* Episode list bugfix: no duplicate horizontal rail / background page scroll. */
+body.detail-open { overflow: hidden; }
+.detail { overscroll-behavior: contain; }
+.episode-list {
+  overflow-x: hidden !important;
+  overflow-y: visible !important;
+  scrollbar-width: auto !important;
+}
+@media (max-width: 760px) {
+  .episode-list {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    gap: 10px !important;
+    overflow: visible !important;
+    scroll-snap-type: none !important;
+    padding: 0 0 12px !important;
+  }
+  .episode-list::-webkit-scrollbar { display: none !important; }
+  .episode {
+    display: grid !important;
+    grid-template-columns: 118px 1fr !important;
+    gap: 12px !important;
+    flex: none !important;
+    padding: 8px !important;
+    border: 1px solid rgba(255,255,255,.07) !important;
+    border-radius: 14px !important;
+    overflow: hidden !important;
+    scroll-snap-align: unset !important;
+  }
+  .episode-thumb {
+    width: 118px !important;
+    height: auto !important;
+    aspect-ratio: 16 / 9 !important;
+    border-radius: 10px !important;
+  }
+  .episode > div:not(.episode-thumb) { padding: 2px 0 !important; }
+}
+
+/* Episode disk cleanup action */
+.episode-delete {
+  border: 1px solid rgba(255,255,255,.10);
+  border-radius: 999px;
+  background: rgba(255,255,255,.055);
+  color: rgba(255,255,255,.62);
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .02em;
+  transition: background .18s var(--spring), color .18s var(--spring), border-color .18s var(--spring), transform .18s var(--spring);
+}
+.episode-delete:hover,
+.episode-delete:focus-visible {
+  background: rgba(229,9,20,.92);
+  color: #fff;
+  border-color: rgba(255,255,255,.24);
+  transform: translateY(-1px);
+}
+.episode-delete:active { transform: translateY(0) scale(.98); }
+@media (max-width: 760px) {
+  .episode-delete {
+    margin-top: 8px;
+    width: max-content;
+    padding: 7px 11px;
+  }
+}
+
+/* IMDb/rating polish */
+.card-rating,
+.episode-rating-big,
+.rating-value { font-variant-numeric: tabular-nums; }
+.rating-strip.elite { background: linear-gradient(135deg, rgba(255,214,102,.17), rgba(229,9,20,.08)); border-color: rgba(255,214,102,.32); }
+.rating-strip.great { background: linear-gradient(135deg, rgba(245,210,122,.13), rgba(245,210,122,.045)); border-color: rgba(245,210,122,.25); }
+.rating-strip.good { background: linear-gradient(135deg, rgba(125,211,252,.12), rgba(125,211,252,.04)); border-color: rgba(125,211,252,.22); }
+.rating-strip.mixed { background: linear-gradient(135deg, rgba(255,255,255,.09), rgba(255,255,255,.035)); border-color: rgba(255,255,255,.14); }
+.rating-pill {
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  margin-bottom: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  background: rgba(245,210,122,.14);
+  color: #ffe4a3;
+}
+.rating-pill.elite { background: rgba(255,214,102,.18); color: #ffe08a; }
+.rating-pill.good { background: rgba(125,211,252,.12); color: #bae6fd; }
+.rating-pill.mixed { background: rgba(255,255,255,.08); color: rgba(255,255,255,.72); }
+.season-rating {
+  margin-left: 7px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: #f5d27a;
+  opacity: .9;
+}
+.episode-rating-big.elite { color: #ffe08a; text-shadow: 0 0 18px rgba(255,214,102,.24); }
+.episode-rating-big.great { color: #f5d27a; }
+.episode-rating-big.good { color: #bae6fd; }
+.episode-rating-big.mixed { color: rgba(255,255,255,.62); }
+
+/* ---------- Missing episodes (TMDB knows, disk doesn't) ---------- */
+.episode.missing {
+  opacity: 0.52;
+  cursor: not-allowed;
+  filter: grayscale(0.45);
+}
+.episode.missing:hover { background: rgba(255,255,255,0.015); }
+.episode.missing .episode-thumb img { filter: grayscale(0.85) brightness(0.7); }
+.episode.missing .episode-title { color: var(--text-dim); font-style: italic; }
+.episode-status.missing-chip {
+  background: rgba(140,140,150,0.2);
+  color: #d6d6dc;
+  border: 1px solid rgba(255,255,255,0.08);
+}
+.episode-missing-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+.episode-airdate {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-faint);
+  margin: 6px 0 0;
+  letter-spacing: .04em;
+}
+
+.player-eps-item.missing {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: grayscale(0.5);
+}
+.player-eps-item.missing:hover { background: rgba(255,255,255,0.04); }
+.player-eps-item.missing .player-eps-thumb img { filter: grayscale(0.85) brightness(0.6); }
+.player-eps-item.missing .player-eps-name { color: var(--text-dim); font-style: italic; }
+.player-eps-thumb .missing-overlay {
+  opacity: 1 !important;
+  background: rgba(0,0,0,0.62);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.78);
+}
+.player-eps-missing-tag {
+  margin-left: auto;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
+  white-space: nowrap;
+}
+
+/* ---------- Detail page mobile: shorter banner, content earlier ---------- */
+@media (max-width: 760px) {
+  .detail-bg { height: 56vh; min-height: 280px; }
+  .detail-shade { height: calc(56vh + 60px); min-height: calc(280px + 60px); }
+  .detail-inner { padding: 36vh 18px 0; }
+  .detail-episodes-shelf { margin: 0 -18px; padding: 22px 18px calc(80px + env(safe-area-inset-bottom)); }
+}
+@media (max-width: 420px) {
+  .detail-bg { height: 50vh; min-height: 240px; }
+  .detail-shade { height: calc(50vh + 60px); min-height: calc(240px + 60px); }
+  .detail-inner { padding: 30vh 14px 0; }
+  .detail-episodes-shelf { margin: 0 -14px; padding: 20px 14px calc(100px + env(safe-area-inset-bottom)); }
 }
