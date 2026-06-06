@@ -1233,14 +1233,27 @@ function ensurePlayerInit() {
     if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
     const v = player.video;
     if (e.key === ' ') { e.preventDefault(); v.paused ? v.play() : v.pause(); showChrome(); }
-    else if (e.key === 'ArrowRight') { v.currentTime = Math.min(v.duration||0, v.currentTime + 5); showChrome(); }
-    else if (e.key === 'ArrowLeft') { v.currentTime = Math.max(0, v.currentTime - 5); showChrome(); }
+    else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      v.currentTime = Math.min(v.duration || 0, v.currentTime + (e.shiftKey ? 30 : 5));
+      showChrome();
+    }
+    else if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      v.currentTime = Math.max(0, v.currentTime - (e.shiftKey ? 30 : 5));
+      showChrome();
+    }
     else if (e.key === 'ArrowUp') { v.volume = Math.min(1, v.volume + 0.1); volRange.value = v.volume; showChrome(); }
     else if (e.key === 'ArrowDown') { v.volume = Math.max(0, v.volume - 0.1); volRange.value = v.volume; showChrome(); }
     else if (e.key === 'f' || e.key === 'F') { fsBtn.click(); }
     else if (e.key === 'm' || e.key === 'M') { muteBtn.click(); }
     else if (e.key === 'c' || e.key === 'C') { subsMenu.classList.toggle('hidden'); }
     else if (e.key === 'e' || e.key === 'E') { const eb = document.getElementById('playerEpisodesBtn'); if (eb && eb.style.display !== 'none') eb.click(); }
+    else if (/^[1-9]$/.test(e.key) && v.duration) {
+      e.preventDefault();
+      v.currentTime = v.duration * (parseInt(e.key, 10) / 10);
+      showChrome();
+    }
     else if (e.key === 'Escape') {
       if (document.fullscreenElement) {
         player.intendedLandscape = false;
