@@ -4,3 +4,6 @@ out/
 *.log
 .DS_Store
 .mediaflix-data/
+
+# Git worktrees
+.worktrees/
