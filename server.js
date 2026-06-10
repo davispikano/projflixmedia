@@ -431,6 +431,25 @@ try { ffprobeStaticPath = require('ffprobe-static').path; } catch {}
 const getFfmpegPath = () => ffmpegStaticPath;
 const getFfprobePath = () => ffprobeStaticPath;
 const probeMemCache = new Map();
+
+// Semáforo para limitar concorrência do ffprobe (máximo 4 em paralelo)
+const PROBE_CONCURRENCY = 4;
+let _probeActive = 0;
+const _probeQueue = [];
+function withProbeSemaphore(fn) {
+  return new Promise((resolve, reject) => {
+    const run = () => {
+      _probeActive++;
+      Promise.resolve().then(fn).then(resolve, reject).finally(() => {
+        _probeActive--;
+        if (_probeQueue.length) _probeQueue.shift()();
+      });
+    };
+    if (_probeActive < PROBE_CONCURRENCY) run();
+    else _probeQueue.push(run);
+  });
+}
+
 function probeFile(filePath) {
   return new Promise((resolve) => {
     const p = safeExistingFile(filePath);
@@ -443,35 +462,36 @@ function probeFile(filePath) {
       if (cached) return resolve(cached);
       return resolve({ audio: [], subs: [], duration: 0, chapters: [] });
     }
-    const proc = spawn(ffprobe, ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', '-show_chapters', p], { stdio: ['ignore', 'pipe', 'ignore'] });
-    let buf = '';
-    proc.stdout.on('data', (d) => buf += d.toString());
-    proc.on('exit', () => {
-      try {
-        const j = JSON.parse(buf);
-        const duration = parseFloat((j.format && j.format.duration) || 0) || 0;
-        const audio = (j.streams || []).filter((s) => s.codec_type === 'audio').map((s, i) => ({ index: i, lang: ((s.tags && (s.tags.language || s.tags.LANGUAGE)) || '').toLowerCase(), title: (s.tags && (s.tags.title || s.tags.TITLE)) || '', codec: s.codec_name }));
-        const subs = (j.streams || []).filter((s) => s.codec_type === 'subtitle').map((s, i) => ({ index: i, lang: ((s.tags && (s.tags.language || s.tags.LANGUAGE)) || '').toLowerCase(), title: (s.tags && (s.tags.title || s.tags.TITLE)) || '', codec: s.codec_name }));
-        let chapters = (j.chapters || []).map((c) => ({ start: parseFloat(c.start_time) || 0, end: parseFloat(c.end_time) || 0, title: (c.tags && (c.tags.title || c.tags.TITLE)) || '' }));
-        // Fallback: se o arquivo nao tem chapters embedded mas temos cache
-        // do MKV original (caso o transcode tenha perdido metadados), usa o cache.
-        if (!chapters.length && probeCache[p] && Array.isArray(probeCache[p].chapters)) {
-          chapters = probeCache[p].chapters;
+    
+    withProbeSemaphore(() => new Promise((semResolve) => {
+      const proc = spawn(ffprobe, ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', '-show_chapters', p], { stdio: ['ignore', 'pipe', 'ignore'] });
+      let buf = '';
+      proc.stdout.on('data', (d) => buf += d.toString());
+      proc.on('exit', () => {
+        try {
+          const j = JSON.parse(buf);
+          const duration = parseFloat((j.format && j.format.duration) || 0) || 0;
+          const audio = (j.streams || []).filter((s) => s.codec_type === 'audio').map((s, i) => ({ index: i, lang: ((s.tags && (s.tags.language || s.tags.LANGUAGE)) || '').toLowerCase(), title: (s.tags && (s.tags.title || s.tags.TITLE)) || '', codec: s.codec_name }));
+          const subs = (j.streams || []).filter((s) => s.codec_type === 'subtitle').map((s, i) => ({ index: i, lang: ((s.tags && (s.tags.language || s.tags.LANGUAGE)) || '').toLowerCase(), title: (s.tags && (s.tags.title || s.tags.TITLE)) || '', codec: s.codec_name }));
+          let chapters = (j.chapters || []).map((c) => ({ start: parseFloat(c.start_time) || 0, end: parseFloat(c.end_time) || 0, title: (c.tags && (c.tags.title || c.tags.TITLE)) || '' }));
+          // Fallback: se o arquivo nao tem chapters embedded mas temos cache
+          // do MKV original (caso o transcode tenha perdido metadados), usa o cache.
+          if (!chapters.length && probeCache[p] && Array.isArray(probeCache[p].chapters)) {
+            chapters = probeCache[p].chapters;
+          }
+          const out = { audio, subs, duration: duration || (probeCache[p] && probeCache[p].duration) || 0, chapters };
+          probeMemCache.set(p, out);
+          semResolve(out);
+        } catch {
+          const cached = probeCache[p];
+          semResolve(cached || { audio: [], subs: [], duration: 0, chapters: [] });
         }
-        const out = { audio, subs, duration: duration || (probeCache[p] && probeCache[p].duration) || 0, chapters };
-        probeMemCache.set(p, out);
-        resolve(out);
-      } catch {
+      });
+      proc.on('error', () => {
         const cached = probeCache[p];
-        if (cached) return resolve(cached);
-        resolve({ audio: [], subs: [], duration: 0, chapters: [] });
-      }
-    });
-    proc.on('error', () => {
-      const cached = probeCache[p];
-      if (cached) return resolve(cached);
-      resolve({ audio: [], subs: [], duration: 0, chapters: [] });
-    });
+        semResolve(cached || { audio: [], subs: [], duration: 0, chapters: [] });
+      });
+    })).then(resolve);
   });
 }
 // Mapa de idioma -> regex matching para identificar uma faixa (audio/sub).
