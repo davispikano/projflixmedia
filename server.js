@@ -86,6 +86,7 @@ function saveProbeCache() {
 }
 let history = readJson(historyPath, {});
 let profiles = readJson(profilesPath, []);
+purgeOldHistory();
 let libraryCache = null;
 
 const mongo = { client: null, db: null, failed: false };
@@ -827,7 +828,24 @@ async function clearHistoryFor(profileId) {
   else { history[profileId] = {}; saveHistory(); }
 }
 
-
+function purgeOldHistory() {
+  const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+  let changed = false;
+  for (const profileId of Object.keys(history)) {
+    const profileHistory = history[profileId];
+    if (!profileHistory || typeof profileHistory !== 'object') continue;
+    for (const filePath of Object.keys(profileHistory)) {
+      const entry = profileHistory[filePath];
+      const lastSeen = entry.closedAt || entry.openedAt || 0;
+      if (lastSeen < cutoff) {
+        delete profileHistory[filePath];
+        changed = true;
+      }
+    }
+  }
+  if (changed) saveHistory();
+  return changed;
+}
 
 async function deleteMediaFile(filePath) {
   const p = safeExistingFile(filePath);
@@ -1507,7 +1525,7 @@ async function api(req, res, u) {
   if (u.pathname === '/api/progress' && req.method === 'GET') return json(res, 200, await getProgressFor(profileIdFrom(u)));
   if (u.pathname === '/api/progress' && req.method === 'POST') { const b = await parseBody(req); let saved = false; if (safeExistingFile(b.path)) saved = await saveProgressFor(profileIdFrom(u, b), b.path, b.time, b.length, b.updatedAt); return json(res, 200, { ok: true, saved }); }
   if (u.pathname === '/api/progress' && req.method === 'DELETE') { await clearProgressFor(profileIdFrom(u), u.searchParams.get('path')); return json(res, 200, { ok: true }); }
-  if (u.pathname === '/api/history' && req.method === 'GET') return json(res, 200, await getHistoryFor(profileIdFrom(u)));
+  if (u.pathname === '/api/history' && req.method === 'GET') { purgeOldHistory(); return json(res, 200, await getHistoryFor(profileIdFrom(u))); }
   if (u.pathname === '/api/history' && req.method === 'DELETE') { await clearHistoryFor(profileIdFrom(u)); return json(res, 200, { ok: true }); }
   if (u.pathname === '/api/history/open') { const b = await parseBody(req); if (safeExistingFile(b.path)) await logOpenFor(profileIdFrom(u, b), b.path); return json(res, 200, { ok: true }); }
   if (u.pathname === '/api/history/close') { const b = await parseBody(req); await logCloseFor(profileIdFrom(u, b), b.path); return json(res, 200, { ok: true }); }
