@@ -2,6 +2,10 @@
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
+// Flag para distinguir fecho via botão Back do Android (popstate) de fecho manual.
+// Evita chamar history.back() em loop.
+let _closingViaPopstate = false;
+
 const state = {
   library: [],
   progress: {},
@@ -360,6 +364,7 @@ async function openDetail(item) {
   const d = $('#detail');
   d.classList.remove('hidden');
   document.body.classList.add('detail-open');
+  history.pushState({ mediaflix: 'detail' }, '');
 
   const bg = item.banner ? await loadImage(item.banner) : null;
   $('#detailBg').style.backgroundImage = bg ? `url('${bg}')` : 'linear-gradient(135deg,#1a1a1f,#0a0a0b)';
@@ -583,6 +588,9 @@ function closeDetail() {
   $('#detail').classList.add('hidden');
   document.body.classList.remove('detail-open');
   state.currentDetail = null;
+  if (!_closingViaPopstate && history.state && history.state.mediaflix === 'detail') {
+    history.back();
+  }
 }
 
 // Find a local library item that matches the given title (case + accent
@@ -1679,6 +1687,7 @@ async function openEmbeddedPlayer({ url, filePath, item, episode, autoNext, auto
   cancelSkip();
   player.el.classList.remove('hidden', 'hide-chrome');
   player.el.classList.toggle('is-series', !!episode);
+  history.pushState({ mediaflix: 'player' }, '');
   setupEpisodesPanel(item, episode);
   updatePlayerSeriesHud(item, episode);
 
@@ -1908,6 +1917,11 @@ function closeEmbeddedPlayer() {
   cancelAutoNext();
   hideSkipBtn();
   if (!player.el) return;
+  // Sincroniza o histórico do browser (botão Back Android).
+  // Se o fecho não veio do popstate, removemos a entrada que empurrámos.
+  if (!_closingViaPopstate && history.state && history.state.mediaflix === 'player') {
+    history.back();
+  }
   const v = player.video;
   const closingItem = player.current ? player.current.item : null;
   let savePromise = null;
@@ -2789,6 +2803,17 @@ async function init() {
     if (player.el && !player.el.classList.contains('hidden')) return;
     if (!$('#searchModal').classList.contains('hidden')) return;
     if (!$('#detail').classList.contains('hidden')) closeDetail();
+  });
+
+  // Botão Back do Android (e browser back) — fecha player ou detalhe
+  window.addEventListener('popstate', () => {
+    _closingViaPopstate = true;
+    if (player.el && !player.el.classList.contains('hidden')) {
+      closeEmbeddedPlayer();
+    } else if (!$('#detail').classList.contains('hidden')) {
+      closeDetail();
+    }
+    _closingViaPopstate = false;
   });
 
   // Periodic refresh of progress + history so the "Continuar" row stays fresh
